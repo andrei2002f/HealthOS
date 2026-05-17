@@ -236,3 +236,56 @@ At the start of each session, tell me which week we're in and what's the next pl
 - If still unclear, ask. One short clarifying question is always better than a wrong implementation.
 - Prefer the boring, obvious solution over the clever one.
 - Optimize for readability and ease of change. This is a personal project that will evolve.
+
+---
+
+## Development progress
+
+### ✅ Week 1 — Foundation (complete, 2026-05-17)
+
+- Next.js 16 (App Router, TypeScript) scaffolded with pnpm
+- Tailwind CSS v4 + shadcn/ui (radix-nova preset, neutral palette)
+- Drizzle ORM + Supabase Postgres: 18 tables, all with RLS + `pgPolicy` owner policies
+- Supabase Auth: magic-link OTP, `@supabase/ssr`, async `cookies()` (Next 16 compat)
+- `proxy.ts` (Next 16 middleware replacement): auth gate + single-user email allowlist
+- `lib/env.ts`: Zod env validation with `server-only` guard
+- `lib/crypto.ts`: AES-256-GCM token encryption
+- PWA: Serwist service worker, `next build --webpack`, disabled in dev
+- Vercel deploy: `https://health-os-hud4.vercel.app`, 2 cron jobs (daily Whoop sync, weekly review)
+- Production login confirmed working
+
+### ⬜ Week 2 — Whoop sync
+
+- OAuth 2.0 flow: `/api/whoop/auth` + `/api/whoop/callback`
+- Token storage (encrypted) + on-demand refresh (no sub-daily cron on Hobby plan)
+- Settings page: connect/disconnect Whoop
+- Sync function: recovery, sleep, workouts, body measurements → Postgres (idempotent upsert)
+- `GET /api/whoop/sync` cron endpoint with `CRON_SECRET` verification
+
+### ⬜ Week 3 — Dashboard + daily check-in
+
+- Recovery/sleep/strain cards (Recharts sparklines)
+- Daily check-in form: mood, energy, soreness, notes
+- Date navigation (today / previous days)
+- Mobile-first layout with bottom nav
+
+### ⬜ Week 4 — Strength tracker
+
+- Log workout session + sets (exercise, weight, reps)
+- PR detection, e1RM calculation
+- Mesocycle planner (optional for MVP)
+- Strength history charts
+
+### ⬜ Week 5 — Basketball + Supplements
+
+- Log basketball session (duration, notes, RPE)
+- Supplement schedule management
+- Daily supplement check-off
+- Basic history/trends
+
+### ⬜ Week 6 — AI layer
+
+- AI coach chat (streaming SSE via `app/api/coach/`)
+- Context builder (`lib/anthropic/context.ts`): last 7 days of all data, <20k tokens
+- Weekly AI review generation (cron Sunday 18:00)
+- Review history page
