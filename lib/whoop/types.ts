@@ -105,13 +105,14 @@ export type WhoopWorkout = {
 // Sport ID → human-readable name.
 // Full list at https://developer.whoop.com/api — unknowns fall back to `sport_${id}`.
 export const SPORT_ID_MAP: Record<number, string> = {
-  0: "Activity",
+  [-1]: "Activity",
+  0: "Running",
   1: "Cycling",
-  16: "Running",
+  16: "Baseball",
   35: "Basketball",
-  44: "Weightlifting",
-  45: "Soccer",
-  63: "Swimming",
+  44: "Soccer",
+  45: "Weightlifting",
+  63: "Walking",
   70: "Functional Fitness",
   125: "HIIT",
 };

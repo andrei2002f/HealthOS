@@ -264,12 +264,15 @@ At the start of each session, tell me which week we're in and what's the next pl
 - Settings page: connect/disconnect, Sync now (Server Action), last 10 sync logs
 - Lesson learned: Whoop v2 data endpoints are at `/developer/v2/*`, not `/v2/*`; IDs are integers not UUIDs
 
-### ⬜ Week 3 — Dashboard + daily check-in
+### ✅ Week 3 — Dashboard + daily check-in (complete, 2026-05-18)
 
-- Recovery/sleep/strain cards (Recharts sparklines)
-- Daily check-in form: mood, energy, soreness, notes
-- Date navigation (today / previous days)
-- Mobile-first layout with bottom nav
+- Dashboard "Today" card: recovery score (green/yellow/red), sleep performance, yesterday's strain, latest workout
+- 7-day sparklines: recovery, sleep duration, strain (Recharts, timezone-aware date keys — Europe/Bucharest)
+- Daily check-in form: 4 sliders (mood/energy/soreness/stress), pain area chips, notes, upsert on date
+- Date navigation on /checkin (← / → buttons, URL ?date=YYYY-MM-DD, future dates blocked)
+- Quick actions grid on dashboard
+- Fixed sport ID map: 63=Walking, 0=Running, -1=Activity; sportName included in upsertWorkout conflict set
+- Lesson learned: timestamps near midnight local time (00:00–03:00 UTC+3) have UTC date = previous day — must key by local timezone consistently
 
 ### ⬜ Week 4 — Strength tracker
 

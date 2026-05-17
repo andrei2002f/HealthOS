@@ -256,6 +256,7 @@ export async function upsertWorkout(
     .onConflictDoUpdate({
       target: whoopWorkouts.id,
       set: {
+        sportName: sportName(workout.sport_id),
         endAt: workout.end ? new Date(workout.end) : null,
         strain: w?.strain?.toString() ?? null,
         averageHeartRate: w?.average_heart_rate ?? null,
