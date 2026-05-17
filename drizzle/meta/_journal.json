@@ -8,6 +8,13 @@
       "when": 1778966758150,
       "tag": "0000_easy_tyrannus",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1779043310343,
+      "tag": "0001_far_grandmaster",
+      "breakpoints": true
     }
   ]
 }

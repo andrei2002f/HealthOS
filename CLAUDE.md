@@ -254,13 +254,15 @@ At the start of each session, tell me which week we're in and what's the next pl
 - Vercel deploy: `https://health-os-hud4.vercel.app`, 2 cron jobs (daily Whoop sync, weekly review)
 - Production login confirmed working
 
-### ⬜ Week 2 — Whoop sync
+### ✅ Week 2 — Whoop sync (complete, 2026-05-17)
 
-- OAuth 2.0 flow: `/api/whoop/auth` + `/api/whoop/callback`
-- Token storage (encrypted) + on-demand refresh (no sub-daily cron on Hobby plan)
-- Settings page: connect/disconnect Whoop
-- Sync function: recovery, sleep, workouts, body measurements → Postgres (idempotent upsert)
-- `GET /api/whoop/sync` cron endpoint with `CRON_SECRET` verification
+- OAuth 2.0 flow: `/api/whoop/authorize` + `/api/whoop/callback`, CSRF state in httpOnly cookie
+- Token storage (AES-256-GCM encrypted) + inline refresh when <10 min remaining
+- `lib/whoop/client.ts`: `WhoopClient` with auto-refresh, `nextToken` pagination, exponential backoff on 429
+- Sync function: cycles, recovery, sleep, workouts → Postgres idempotent upsert (Whoop integer IDs stored as `text`)
+- `GET /api/whoop/sync` cron endpoint with `CRON_SECRET` verification (60s timeout)
+- Settings page: connect/disconnect, Sync now (Server Action), last 10 sync logs
+- Lesson learned: Whoop v2 data endpoints are at `/developer/v2/*`, not `/v2/*`; IDs are integers not UUIDs
 
 ### ⬜ Week 3 — Dashboard + daily check-in
 
