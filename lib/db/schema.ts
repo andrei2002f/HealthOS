@@ -71,7 +71,7 @@ export const whoopCredentials = pgTable(
 export const whoopCycles = pgTable(
   "whoop_cycles",
   {
-    id: uuid("id").primaryKey(), // Whoop v2 UUID
+    id: text("id").primaryKey(), // Whoop v2 ID (integer stored as text)
     userId: uuid("user_id")
       .notNull()
       .references(() => authUsers.id, { onDelete: "cascade" }),
@@ -93,14 +93,14 @@ export const whoopCycles = pgTable(
 export const whoopRecovery = pgTable(
   "whoop_recovery",
   {
-    id: uuid("id").primaryKey(),
+    id: text("id").primaryKey(),
     userId: uuid("user_id")
       .notNull()
       .references(() => authUsers.id, { onDelete: "cascade" }),
-    cycleId: uuid("cycle_id").references(() => whoopCycles.id, {
+    cycleId: text("cycle_id").references(() => whoopCycles.id, {
       onDelete: "set null",
     }),
-    sleepId: uuid("sleep_id"),
+    sleepId: text("sleep_id"),
     recoveryScore: integer("recovery_score"),
     hrvRmssdMs: numeric("hrv_rmssd_ms"),
     restingHeartRate: integer("resting_heart_rate"),
@@ -119,11 +119,11 @@ export const whoopRecovery = pgTable(
 export const whoopSleep = pgTable(
   "whoop_sleep",
   {
-    id: uuid("id").primaryKey(),
+    id: text("id").primaryKey(),
     userId: uuid("user_id")
       .notNull()
       .references(() => authUsers.id, { onDelete: "cascade" }),
-    cycleId: uuid("cycle_id").references(() => whoopCycles.id, {
+    cycleId: text("cycle_id").references(() => whoopCycles.id, {
       onDelete: "set null",
     }),
     startAt: timestamp("start_at", { withTimezone: true }),
@@ -149,7 +149,7 @@ export const whoopSleep = pgTable(
 export const whoopWorkouts = pgTable(
   "whoop_workouts",
   {
-    id: uuid("id").primaryKey(),
+    id: text("id").primaryKey(),
     userId: uuid("user_id")
       .notNull()
       .references(() => authUsers.id, { onDelete: "cascade" }),
@@ -206,7 +206,7 @@ export const strengthSessions = pgTable(
     performedAt: timestamp("performed_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
-    whoopWorkoutId: uuid("whoop_workout_id").references(() => whoopWorkouts.id, {
+    whoopWorkoutId: text("whoop_workout_id").references(() => whoopWorkouts.id, {
       onDelete: "set null",
     }),
     notes: text("notes"),
@@ -286,7 +286,7 @@ export const basketballSessions = pgTable(
       .notNull()
       .references(() => authUsers.id, { onDelete: "cascade" }),
     playedAt: timestamp("played_at", { withTimezone: true }).notNull(),
-    whoopWorkoutId: uuid("whoop_workout_id").references(() => whoopWorkouts.id, {
+    whoopWorkoutId: text("whoop_workout_id").references(() => whoopWorkouts.id, {
       onDelete: "set null",
     }),
     sessionType: text("session_type"), // 'pickup' | 'league' | 'training' | '3v3' | '5v5'

@@ -33,25 +33,25 @@ export async function syncWhoop(userId: string): Promise<SyncResult> {
   const result: SyncResult = { cycles: 0, recovery: 0, sleep: 0, workouts: 0 };
 
   try {
-    for await (const cycle of client.paginate<WhoopCycle>("/v2/cycle")) {
+    for await (const cycle of client.paginate<WhoopCycle>("/developer/v2/cycle")) {
       await upsertCycle(userId, cycle);
       result.cycles++;
     }
 
-    for await (const rec of client.paginate<WhoopRecovery>("/v2/recovery")) {
+    for await (const rec of client.paginate<WhoopRecovery>("/developer/v2/recovery")) {
       await upsertRecovery(userId, rec);
       result.recovery++;
     }
 
     for await (const sleep of client.paginate<WhoopSleep>(
-      "/v2/activity/sleep",
+      "/developer/v2/activity/sleep",
     )) {
       await upsertSleep(userId, sleep);
       result.sleep++;
     }
 
     for await (const workout of client.paginate<WhoopWorkout>(
-      "/v2/activity/workout",
+      "/developer/v2/activity/workout",
     )) {
       await upsertWorkout(userId, workout);
       result.workouts++;

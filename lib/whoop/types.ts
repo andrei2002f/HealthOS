@@ -15,7 +15,7 @@ export type WhoopTokenResponse = {
 };
 
 export type WhoopCycle = {
-  id: string;
+  id: number;
   user_id: number;
   created_at: string;
   updated_at: string;
@@ -32,8 +32,8 @@ export type WhoopCycle = {
 };
 
 export type WhoopRecovery = {
-  cycle_id: string;
-  sleep_id: string;
+  cycle_id: number;
+  sleep_id: number;
   user_id: number;
   created_at: string;
   updated_at: string;
@@ -49,7 +49,7 @@ export type WhoopRecovery = {
 };
 
 export type WhoopSleep = {
-  id: string;
+  id: number;
   user_id: number;
   created_at: string;
   updated_at: string;
@@ -73,7 +73,7 @@ export type WhoopSleep = {
 };
 
 export type WhoopWorkout = {
-  id: string;
+  id: number;
   user_id: number;
   created_at: string;
   updated_at: string;

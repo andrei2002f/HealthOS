@@ -90,7 +90,7 @@ export async function upsertCycle(
   await db
     .insert(whoopCycles)
     .values({
-      id: cycle.id,
+      id: String(cycle.id),
       userId,
       startAt: new Date(cycle.start),
       endAt: cycle.end ? new Date(cycle.end) : null,
@@ -124,10 +124,10 @@ export async function upsertRecovery(
   await db
     .insert(whoopRecovery)
     .values({
-      id: recovery.cycle_id, // recovery uses cycle_id as its PK
+      id: String(recovery.cycle_id), // recovery uses cycle_id as its PK
       userId,
-      cycleId: recovery.cycle_id,
-      sleepId: recovery.sleep_id,
+      cycleId: String(recovery.cycle_id),
+      sleepId: String(recovery.sleep_id),
       recoveryScore: recovery.score?.recovery_score ?? null,
       hrvRmssdMs: recovery.score?.hrv_rmssd_milli?.toString() ?? null,
       restingHeartRate: recovery.score?.resting_heart_rate ?? null,
@@ -162,7 +162,7 @@ export async function upsertSleep(
   await db
     .insert(whoopSleep)
     .values({
-      id: sleep.id,
+      id: String(sleep.id),
       userId,
       startAt: sleep.start ? new Date(sleep.start) : null,
       endAt: sleep.end ? new Date(sleep.end) : null,
@@ -239,7 +239,7 @@ export async function upsertWorkout(
   await db
     .insert(whoopWorkouts)
     .values({
-      id: workout.id,
+      id: String(workout.id),
       userId,
       sportName: sportName(workout.sport_id),
       startAt: workout.start ? new Date(workout.start) : null,
