@@ -274,12 +274,17 @@ At the start of each session, tell me which week we're in and what's the next pl
 - Fixed sport ID map: 63=Walking, 0=Running, -1=Activity; sportName included in upsertWorkout conflict set
 - Lesson learned: timestamps near midnight local time (00:00–03:00 UTC+3) have UTC date = previous day — must key by local timezone consistently
 
-### ⬜ Week 4 — Strength tracker
+### ✅ Week 4 — Strength tracker (complete, 2026-05-18)
 
-- Log workout session + sets (exercise, weight, reps)
-- PR detection, e1RM calculation
-- Mesocycle planner (optional for MVP)
-- Strength history charts
+- `/strength` — session list with pagination (?page=N), unlinked Whoop weightlifting workouts shown with "Add sets →"
+- `/strength/new` — interactive session builder (Client Component, local state, save at end via Server Action)
+- `/strength/[sessionId]` — session detail: sets grouped by exercise, PR badges
+- `/strength/exercises/[exerciseId]` — e1RM chart (Recharts, last 90 days), all-time PR card, last 10 sessions, Edit button for metadata
+- PR detection: `e1rm` (Epley formula) and `top_set` types; detected on session save, stored in `personal_records`; toast per new PR
+- 28 exercises auto-seeded on first visit (idempotent); exercise search/create dialog with muscle group + equipment chips
+- Whoop auto-link: weightlifting workout on same local date linked to session on save
+- Vitest unit tests for pure PR detection logic (`lib/strength/pr-detection.ts`)
+- Lesson learned: Whoop sport name is `"Weightlifting"` (capital W, sport ID 45), not `"weightlifting"`
 
 ### ⬜ Week 5 — Basketball + Supplements
 
