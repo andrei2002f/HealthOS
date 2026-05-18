@@ -64,7 +64,7 @@ export function ExerciseSearchSheet({
 
   return (
     <Sheet open={open} onOpenChange={(v) => !v && onClose()}>
-      <SheetContent side="bottom" className="h-[80vh]">
+      <SheetContent side="bottom" className="h-[55vh] rounded-t-2xl">
         <SheetHeader>
           <SheetTitle>Add exercise</SheetTitle>
         </SheetHeader>
