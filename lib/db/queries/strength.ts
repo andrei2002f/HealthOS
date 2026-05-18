@@ -118,6 +118,19 @@ export async function getExercise(
   return exercise
 }
 
+export async function updateExercise(
+  userId: string,
+  exerciseId: string,
+  data: { name?: string; primaryMuscle?: string | null; equipment?: string | null },
+): Promise<Exercise | undefined> {
+  const [exercise] = await db
+    .update(exercises)
+    .set(data)
+    .where(and(eq(exercises.id, exerciseId), eq(exercises.userId, userId)))
+    .returning()
+  return exercise
+}
+
 // ─────────────────────────── Session queries ───────────────────────────
 
 export type SessionSummary = {

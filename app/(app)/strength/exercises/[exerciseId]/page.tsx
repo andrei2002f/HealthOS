@@ -9,6 +9,7 @@ import {
   getExerciseAllTimePR,
 } from "@/lib/db/queries/strength"
 import { E1rmChart } from "@/components/strength/E1rmChart"
+import { EditExerciseForm } from "@/components/strength/EditExerciseForm"
 import { Badge } from "@/components/ui/badge"
 
 const TZ = "Europe/Bucharest"
@@ -61,6 +62,7 @@ export default async function ExerciseDetailPage({ params }: Props) {
             )}
           </div>
         </div>
+        <EditExerciseForm exercise={exercise} />
       </div>
 
       {/* PR card */}

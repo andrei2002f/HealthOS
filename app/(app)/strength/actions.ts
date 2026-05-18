@@ -7,6 +7,7 @@ import { createClient } from "@/lib/supabase/server"
 import {
   saveStrengthSession,
   createExercise,
+  updateExercise,
   type NewPR,
   type Exercise,
 } from "@/lib/db/queries/strength"
@@ -45,6 +46,13 @@ const AddExerciseSchema = z.object({
   name: z.string().min(1).max(100),
   primaryMuscle: z.string().optional(),
   equipment: z.string().optional(),
+})
+
+const UpdateExerciseSchema = z.object({
+  exerciseId: z.string().uuid(),
+  name: z.string().min(1).max(100).optional(),
+  primaryMuscle: z.string().nullable().optional(),
+  equipment: z.string().nullable().optional(),
 })
 
 // ─────────────────────────── Actions ───────────────────────────
@@ -104,4 +112,27 @@ export async function addExercise(
   } catch {
     return { ok: false, error: "Exercise already exists" }
   }
+}
+
+export async function updateExerciseAction(
+  payload: unknown,
+): Promise<{ ok: true; exercise: Exercise } | { ok: false; error: string }> {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Not authenticated" }
+
+  const parsed = UpdateExerciseSchema.safeParse(payload)
+  if (!parsed.success) {
+    const issues = (parsed.error as unknown as { issues: { message: string }[] }).issues
+    return { ok: false, error: issues[0]?.message ?? "Invalid data" }
+  }
+
+  const { exerciseId, ...data } = parsed.data
+  const exercise = await updateExercise(user.id, exerciseId, data)
+  if (!exercise) return { ok: false, error: "Exercise not found" }
+
+  revalidatePath(`/strength/exercises/${exerciseId}`)
+  return { ok: true, exercise }
 }

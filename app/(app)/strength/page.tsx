@@ -11,22 +11,34 @@ import { SessionCard } from "@/components/strength/SessionCard"
 import { WhoopWorkoutCard } from "@/components/strength/WhoopWorkoutCard"
 import { Button } from "@/components/ui/button"
 
-export default async function StrengthPage() {
+const PAGE_SIZE = 20
+
+type Props = {
+  searchParams: Promise<{ page?: string }>
+}
+
+export default async function StrengthPage({ searchParams }: Props) {
   const supabase = await createClient()
   const {
     data: { user },
   } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
-  // Seed exercises on first visit (idempotent)
   await seedExercises(user.id)
 
+  const { page: pageParam } = await searchParams
+  const page = Math.max(1, parseInt(pageParam ?? "1", 10) || 1)
+  const offset = (page - 1) * PAGE_SIZE
+  const isFirstPage = page === 1
+
   const [sessions, whoopWorkouts] = await Promise.all([
-    getStrengthSessions(user.id, 20, 0),
-    getUnlinkedWhoopWeightliftingWorkouts(user.id, 20),
+    getStrengthSessions(user.id, PAGE_SIZE, offset),
+    isFirstPage ? getUnlinkedWhoopWeightliftingWorkouts(user.id, 20) : Promise.resolve([]),
   ])
 
-  // Merge and sort by date desc
+  const hasNext = sessions.length === PAGE_SIZE
+  const hasPrev = page > 1
+
   type ListItem =
     | { kind: "session"; date: Date; session: (typeof sessions)[0] }
     | { kind: "whoop"; date: Date; workout: (typeof whoopWorkouts)[0] }
@@ -55,15 +67,34 @@ export default async function StrengthPage() {
           </Button>
         </div>
       ) : (
-        <div className="flex flex-col gap-3">
-          {items.map((item) =>
-            item.kind === "session" ? (
-              <SessionCard key={item.session.id} session={item.session} />
-            ) : (
-              <WhoopWorkoutCard key={item.workout.id} workout={item.workout} />
-            ),
+        <>
+          <div className="flex flex-col gap-3">
+            {items.map((item) =>
+              item.kind === "session" ? (
+                <SessionCard key={item.session.id} session={item.session} />
+              ) : (
+                <WhoopWorkoutCard key={item.workout.id} workout={item.workout} />
+              ),
+            )}
+          </div>
+
+          {(hasPrev || hasNext) && (
+            <div className="mt-4 flex items-center justify-between">
+              {hasPrev ? (
+                <Button asChild variant="outline" size="sm">
+                  <Link href={`/strength?page=${page - 1}`}>← Newer</Link>
+                </Button>
+              ) : (
+                <div />
+              )}
+              {hasNext && (
+                <Button asChild variant="outline" size="sm">
+                  <Link href={`/strength?page=${page + 1}`}>Older →</Link>
+                </Button>
+              )}
+            </div>
           )}
-        </div>
+        </>
       )}
     </div>
   )
