@@ -30,6 +30,7 @@ const EntrySchema = z.object({
 const SaveSessionSchema = z.object({
   performedAt: z.string().datetime(),
   notes: z.string().optional(),
+  whoopWorkoutId: z.string().optional(),
   entries: z
     .array(EntrySchema)
     .min(1)
@@ -67,11 +68,12 @@ export async function saveSession(
     return { ok: false, error: issues[0]?.message ?? "Invalid data" }
   }
 
-  const { performedAt, notes, entries } = parsed.data
+  const { performedAt, notes, whoopWorkoutId, entries } = parsed.data
 
   const result = await saveStrengthSession(user.id, {
     performedAt: new Date(performedAt),
     notes,
+    whoopWorkoutId,
     entries,
   })
 

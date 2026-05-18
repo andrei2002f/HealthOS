@@ -43,9 +43,10 @@ function makeSet(overrides?: Partial<DraftSet>): DraftSet {
 type Props = {
   initialExercises: Exercise[]
   defaultDate: string // "YYYY-MM-DD"
+  whoopWorkoutId?: string
 }
 
-export function SessionBuilder({ initialExercises, defaultDate }: Props) {
+export function SessionBuilder({ initialExercises, defaultDate, whoopWorkoutId }: Props) {
   const router = useRouter()
   const [exercises, setExercises] = useState<Exercise[]>(initialExercises)
   const [entries, setEntries] = useState<DraftEntry[]>([])
@@ -117,6 +118,7 @@ export function SessionBuilder({ initialExercises, defaultDate }: Props) {
       // Use noon of the selected date so timezone shifts never change the day
       performedAt: new Date(`${date}T12:00:00`).toISOString(),
       notes: notes.trim() || undefined,
+      whoopWorkoutId: whoopWorkoutId || undefined,
       entries: entries.map((entry) => ({
         exerciseId: entry.exercise.id,
         exerciseName: entry.exercise.name,

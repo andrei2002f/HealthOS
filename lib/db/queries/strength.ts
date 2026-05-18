@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, lt, inArray, sql } from "drizzle-orm"
+import { and, desc, eq, gte, lt, inArray, isNull, sql } from "drizzle-orm"
 import { subDays } from "date-fns"
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz"
 
@@ -28,6 +28,7 @@ export type NewPR = {
 export type SaveSessionInput = {
   performedAt: Date
   notes?: string
+  whoopWorkoutId?: string
   entries: Array<{
     exerciseId: string
     exerciseName: string
@@ -157,6 +158,47 @@ export async function getStrengthSessions(
     .offset(offset)
 
   return rows
+}
+
+export type UnlinkedWhoopWorkout = {
+  id: string
+  startAt: Date
+  endAt: Date | null
+  strain: number | null
+}
+
+export async function getUnlinkedWhoopWeightliftingWorkouts(
+  userId: string,
+  limit = 20,
+): Promise<UnlinkedWhoopWorkout[]> {
+  const rows = await db
+    .select({
+      id: whoopWorkouts.id,
+      startAt: whoopWorkouts.startAt,
+      endAt: whoopWorkouts.endAt,
+      strain: whoopWorkouts.strain,
+      linkedSessionId: strengthSessions.id,
+    })
+    .from(whoopWorkouts)
+    .leftJoin(strengthSessions, eq(strengthSessions.whoopWorkoutId, whoopWorkouts.id))
+    .where(
+      and(
+        eq(whoopWorkouts.userId, userId),
+        eq(whoopWorkouts.sportName, "weightlifting"),
+        isNull(strengthSessions.id),
+      ),
+    )
+    .orderBy(desc(whoopWorkouts.startAt))
+    .limit(limit)
+
+  return rows
+    .filter((r): r is typeof r & { startAt: Date } => r.startAt !== null)
+    .map((r) => ({
+      id: r.id,
+      startAt: r.startAt,
+      endAt: r.endAt,
+      strain: r.strain !== null ? parseFloat(r.strain) : null,
+    }))
 }
 
 export type SessionDetail = {
@@ -373,7 +415,12 @@ export async function saveStrengthSession(
   const sessionId = await db.transaction(async (tx) => {
     const [session] = await tx
       .insert(strengthSessions)
-      .values({ userId, performedAt: data.performedAt, notes: data.notes })
+      .values({
+        userId,
+        performedAt: data.performedAt,
+        notes: data.notes,
+        whoopWorkoutId: data.whoopWorkoutId ?? null,
+      })
       .returning({ id: strengthSessions.id })
 
     const allSets = data.entries.flatMap((entry) =>
@@ -395,8 +442,8 @@ export async function saveStrengthSession(
     return session.id
   })
 
-  // 2. Whoop auto-link (best effort — failure must not lose the session)
-  try {
+  // 2. Whoop auto-link (best effort — skip if already linked, failure must not lose the session)
+  if (!data.whoopWorkoutId) try {
     const localDate = formatInTimeZone(data.performedAt, TZ, "yyyy-MM-dd")
     const dayStartUtc = fromZonedTime(new Date(`${localDate}T00:00:00`), TZ)
     const dayEndUtc = fromZonedTime(new Date(`${localDate}T23:59:59`), TZ)
