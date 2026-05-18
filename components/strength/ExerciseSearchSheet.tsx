@@ -4,11 +4,11 @@ import { useState, useTransition } from "react"
 import { Search, Plus, Dumbbell } from "lucide-react"
 
 import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet"
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -63,13 +63,13 @@ export function ExerciseSearchSheet({
   }
 
   return (
-    <Sheet open={open} onOpenChange={(v) => !v && onClose()}>
-      <SheetContent side="bottom" className="h-[55vh] rounded-t-2xl">
-        <SheetHeader>
-          <SheetTitle>Add exercise</SheetTitle>
-        </SheetHeader>
+    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="flex h-[70vh] max-w-md flex-col gap-0 p-0">
+        <DialogHeader className="border-b px-4 py-3">
+          <DialogTitle>Add exercise</DialogTitle>
+        </DialogHeader>
 
-        <div className="mt-4 flex items-center gap-2 border-b pb-3">
+        <div className="flex items-center gap-2 border-b px-4 py-2">
           <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
           <Input
             autoFocus
@@ -80,7 +80,7 @@ export function ExerciseSearchSheet({
           />
         </div>
 
-        <div className="mt-2 flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto px-2 py-1">
           {showCreateOption && (
             <Button
               variant="ghost"
@@ -116,7 +116,7 @@ export function ExerciseSearchSheet({
             </p>
           )}
         </div>
-      </SheetContent>
-    </Sheet>
+      </DialogContent>
+    </Dialog>
   )
 }
