@@ -45,6 +45,7 @@ export function E1rmChart({ data, prE1rm }: Props) {
     )
   }
 
+  // First occurrence is fine — PR is unique per exercise per record_type
   const prPoint = data.find((d) => d.e1rm === prE1rm)
 
   return (
@@ -53,7 +54,7 @@ export function E1rmChart({ data, prE1rm }: Props) {
         <XAxis
           dataKey="date"
           tick={{ fontSize: 11 }}
-          tickFormatter={(v: string) => v.slice(5)}
+          tickFormatter={(v: string) => v.slice(5)} // v is "YYYY-MM-DD" → shows "MM-DD"
         />
         <YAxis tick={{ fontSize: 11 }} domain={["auto", "auto"]} />
         <Tooltip content={<CustomTooltip />} />
