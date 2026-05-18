@@ -1,26 +1,23 @@
-import { redirect } from "next/navigation";
+import { redirect } from "next/navigation"
 
-import { MainNav } from "@/components/shared/MainNav";
-import { Button } from "@/components/ui/button";
-import { createClient } from "@/lib/supabase/server";
-import { signOut } from "./actions";
+import { MainNav } from "@/components/shared/MainNav"
+import { Toaster } from "@/components/ui/sonner"
+import { Button } from "@/components/ui/button"
+import { createClient } from "@/lib/supabase/server"
+import { signOut } from "./actions"
 
-/**
- * Authenticated app shell. Middleware already gates access; this is a
- * defense-in-depth check and the place the user object is first loaded.
- */
 export default async function AppLayout({
   children,
 }: {
-  children: React.ReactNode;
+  children: React.ReactNode
 }) {
-  const supabase = await createClient();
+  const supabase = await createClient()
   const {
     data: { user },
-  } = await supabase.auth.getUser();
+  } = await supabase.auth.getUser()
 
   if (!user) {
-    redirect("/login");
+    redirect("/login")
   }
 
   return (
@@ -42,6 +39,8 @@ export default async function AppLayout({
       <div className="md:hidden">
         <MainNav />
       </div>
+
+      <Toaster richColors position="top-center" />
     </div>
-  );
+  )
 }
