@@ -184,7 +184,7 @@ export async function getUnlinkedWhoopWeightliftingWorkouts(
     .where(
       and(
         eq(whoopWorkouts.userId, userId),
-        eq(whoopWorkouts.sportName, "weightlifting"),
+        eq(whoopWorkouts.sportName, "Weightlifting"),
         isNull(strengthSessions.id),
       ),
     )
@@ -454,7 +454,7 @@ export async function saveStrengthSession(
       .where(
         and(
           eq(whoopWorkouts.userId, userId),
-          eq(whoopWorkouts.sportName, "weightlifting"),
+          eq(whoopWorkouts.sportName, "Weightlifting"),
           gte(whoopWorkouts.startAt, dayStartUtc),
           lt(whoopWorkouts.startAt, dayEndUtc),
         ),
