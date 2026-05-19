@@ -109,7 +109,7 @@ export const SPORT_ID_MAP: Record<number, string> = {
   0: "Running",
   1: "Cycling",
   16: "Baseball",
-  35: "Basketball",
+  17: "Basketball",
   44: "Soccer",
   45: "Weightlifting",
   63: "Walking",
