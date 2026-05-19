@@ -1,7 +1,5 @@
 import "server-only";
 
-import type { MessageParam } from "@anthropic-ai/sdk/resources/messages";
-
 import { anthropic, MODEL } from "./client";
 import { COACH_SYSTEM_PROMPT } from "./prompts";
 import { buildUserContext } from "./context";
@@ -30,16 +28,19 @@ ${contextBlock}`;
   // Cap history to last 30 messages to keep tokens bounded
   const cappedHistory = history.slice(-30);
 
-  const messages: MessageParam[] = [
+  const messages = [
     ...cappedHistory,
-    { role: "user", content: userMessage },
+    { role: "user" as const, content: userMessage },
   ];
 
-  const stream = await anthropic.messages.stream({
+  // Use create({stream: true}) for a raw RawMessageStreamEvent iterator —
+  // simpler than the MessageStream wrapper and works reliably with for-await.
+  const stream = await anthropic.messages.create({
     model: MODEL,
     max_tokens: 1024,
     system: systemPrompt,
     messages,
+    stream: true,
   });
 
   const encoder = new TextEncoder();
@@ -58,9 +59,11 @@ ${contextBlock}`;
         }
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
         controller.close();
-      } catch {
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[coach] streaming error:", msg);
         controller.enqueue(
-          encoder.encode(`data: ${JSON.stringify({ error: "Stream error" })}\n\n`),
+          encoder.encode(`data: ${JSON.stringify({ error: msg })}\n\n`),
         );
         controller.close();
       }

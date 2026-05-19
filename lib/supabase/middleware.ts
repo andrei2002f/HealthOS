@@ -2,7 +2,7 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
 /** Paths reachable without an authenticated session. */
-const PUBLIC_PATHS = ["/login", "/auth/callback"];
+const PUBLIC_PATHS = ["/login", "/auth/callback", "/api"];
 
 function isPublic(pathname: string): boolean {
   return PUBLIC_PATHS.some(
