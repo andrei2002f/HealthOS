@@ -314,9 +314,20 @@ At the start of each session, tell me which week we're in and what's the next pl
   `lib/whoop/types.ts` had it wrong. Existing rows synced before the fix need a re-sync
   to be relabelled (`upsertWorkout` updates `sport_name` on conflict)
 
-### ⬜ Week 6 — AI layer
+### ✅ Week 6 — AI layer (complete, 2026-05-19)
 
-- AI coach chat (streaming SSE via `app/api/coach/`)
-- Context builder (`lib/anthropic/context.ts`): last 7 days of all data, <20k tokens
-- Weekly AI review generation (cron Sunday 18:00)
-- Review history page
+- AI coach chat: streaming SSE via `app/api/coach/route.ts`; persistent history in
+  `coach_messages` table (new schema + migration); `CoachChat` client component with
+  live token streaming, "Clear conversation" action
+- Context builder (`lib/anthropic/context.ts`): assembles last 7 days of recovery /
+  sleep / strain, today's stats, last 3 strength sessions (top sets), last 3 basketball
+  sessions, last 3 daily check-ins, active supplements + experiments; ~1–2k tokens
+- Weekly AI review generation: cron route `app/api/reviews/generate/route.ts`
+  (Sunday 18:00 UTC, already in `vercel.json`); idempotent upsert; sync_logs entry per run
+- Review history: `/reviews` list + `/reviews/[reviewId]` detail (markdown via
+  `react-markdown` + `remark-gfm`)
+- `components/shared/Markdown.tsx`: shared markdown renderer used by coach + reviews
+- Whoop MCP integration deferred — context builder covers the PRD acceptance test
+- Push notifications for review-ready deferred (consistent with Week 5)
+- Lesson learned: Anthropic streaming uses `content_block_delta` / `text_delta` chunks;
+  `ReadableStream.tee()` lets you both pipe SSE to client and accumulate for DB save
