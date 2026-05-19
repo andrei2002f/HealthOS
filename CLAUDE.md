@@ -286,12 +286,33 @@ At the start of each session, tell me which week we're in and what's the next pl
 - Vitest unit tests for pure PR detection logic (`lib/strength/pr-detection.ts`)
 - Lesson learned: Whoop sport name is `"Weightlifting"` (capital W, sport ID 45), not `"weightlifting"`
 
-### ⬜ Week 5 — Basketball + Supplements
+### ✅ Week 5 — Basketball + Supplements (complete, 2026-05-19)
 
-- Log basketball session (duration, notes, RPE)
-- Supplement schedule management
-- Daily supplement check-off
-- Basic history/trends
+**Basketball**
+- `/basketball` — session list with pagination (?page=N), aggregate stats card on top
+  (games, W–L record, win rate, avg points/assists, points-per-minute)
+- Whoop basketball workouts are **auto-materialised** into `basketball_sessions`
+  (`autoCreateBasketballSessions`, idempotent) — runs on Whoop sync and on `/basketball`
+  page load. Sessions start with just date + Whoop link + duration; user adds score and
+  box-score details later by editing the session
+- `/basketball/new` — manual game form for games without a Whoop workout
+- `/basketball/[sessionId]` — detail/edit (full form: score, box score, type/location/surface, effort)
+- Pure aggregation logic in `lib/basketball/stats.ts` with Vitest unit tests
+
+**Supplements**
+- `/supplements` — today's check-off list (mark taken / skip / undo, idempotent per
+  supplement/day) + 7-day adherence grid
+- `/supplements/new` + `/supplements/[supplementId]` — supplement CRUD; schedule slots
+  (time + days of week) managed on the detail page; archive
+- `/supplements/experiments` — start an experiment, then a per-metric comparison
+  (recovery / HRV / sleep performance) of Whoop data inside vs outside the window,
+  with Recharts bar charts; conclusion + end date editable inline
+- Pure comparison logic in `lib/supplements/experiment-analysis.ts` with Vitest tests
+- No schema changes needed — all Week 5 tables were migrated in Week 1
+- Push notifications for schedule times deferred (schedule times are informative only)
+- Lesson learned: Whoop sport ID for Basketball is `17`, not `35` — `SPORT_ID_MAP` in
+  `lib/whoop/types.ts` had it wrong. Existing rows synced before the fix need a re-sync
+  to be relabelled (`upsertWorkout` updates `sport_name` on conflict)
 
 ### ⬜ Week 6 — AI layer
 
