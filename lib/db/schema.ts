@@ -468,6 +468,25 @@ export const aiInsights = pgTable(
   ],
 );
 
+// ───────────────────────────── AI coach messages ─────────────────────────────
+
+export const coachMessages = pgTable(
+  "coach_messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => authUsers.id, { onDelete: "cascade" }),
+    role: text("role").notNull(), // 'user' | 'assistant'
+    content: text("content").notNull(),
+    ...timestamps,
+  },
+  (t) => [
+    index("coach_messages_user_created_idx").on(t.userId, t.createdAt),
+    ownerPolicy("coach_messages"),
+  ],
+);
+
 // ───────────────────────────────── Sync logs ─────────────────────────────────
 
 export const syncLogs = pgTable(
