@@ -9,6 +9,7 @@ import {
   upsertSleep,
   upsertWorkout,
 } from "@/lib/db/queries/whoop";
+import { autoCreateBasketballSessions } from "@/lib/db/queries/basketball";
 
 import { WhoopClient } from "./client";
 import type { WhoopCycle, WhoopRecovery, WhoopSleep, WhoopWorkout } from "./types";
@@ -56,6 +57,9 @@ export async function syncWhoop(userId: string): Promise<SyncResult> {
       await upsertWorkout(userId, workout);
       result.workouts++;
     }
+
+    // Materialise a basketball session for each new Whoop basketball workout.
+    await autoCreateBasketballSessions(userId);
 
     const total =
       result.cycles + result.recovery + result.sleep + result.workouts;
