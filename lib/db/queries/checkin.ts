@@ -1,11 +1,23 @@
 import "server-only";
 
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import { dailyCheckins } from "@/lib/db/schema";
 
 export type CheckinRow = typeof dailyCheckins.$inferSelect;
+
+export async function getRecentCheckins(
+  userId: string,
+  n = 3,
+): Promise<CheckinRow[]> {
+  return db
+    .select()
+    .from(dailyCheckins)
+    .where(eq(dailyCheckins.userId, userId))
+    .orderBy(desc(dailyCheckins.checkDate))
+    .limit(n);
+}
 
 export async function getCheckin(
   userId: string,
