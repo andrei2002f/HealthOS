@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { format } from "date-fns";
+import { format, parseISO } from "date-fns";
 import { enGB } from "date-fns/locale";
 import { CalendarIcon, X } from "lucide-react";
 
@@ -17,10 +17,14 @@ import {
 type Props = {
   /** Form field name; emits the value as ISO yyyy-MM-dd. */
   name: string;
+  /** Initial date as ISO yyyy-MM-dd (e.g. when editing an existing task). */
+  defaultValue?: string;
 };
 
-export function DueDatePicker({ name }: Props) {
-  const [value, setValue] = useState<Date | undefined>(undefined);
+export function DueDatePicker({ name, defaultValue }: Props) {
+  const [value, setValue] = useState<Date | undefined>(
+    defaultValue ? parseISO(defaultValue) : undefined,
+  );
   const [open, setOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 

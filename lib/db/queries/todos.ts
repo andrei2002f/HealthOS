@@ -35,6 +35,21 @@ export async function createTodo(
   return row;
 }
 
+export async function updateTodo(
+  userId: string,
+  id: string,
+  input: CreateTodoInput,
+): Promise<void> {
+  await db
+    .update(todos)
+    .set({
+      title: input.title,
+      dueDate: input.dueDate,
+      priority: input.priority,
+    })
+    .where(and(eq(todos.id, id), eq(todos.userId, userId)));
+}
+
 export async function setTodoCompleted(
   userId: string,
   id: string,

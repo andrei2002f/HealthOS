@@ -356,3 +356,23 @@ First step in broadening the app beyond fitness ("more all-rounded"). Design spe
   the form's native `reset` event (fired by `formRef.reset()` on successful add) rather
   than via lifted state reset in the success effect
 - New dependency: `react-day-picker` (via `shadcn add calendar popover`)
+
+### ✅ Todo edit + toast dedup (complete, 2026-06-23)
+
+- Edit existing tasks inline: a pencil button on each `TodoItem` swaps the row for an
+  `EditTodoForm` (title / due date / priority, Save + Cancel). `TodoItem` is now a Client
+  Component holding the `editing` flag; toggle/delete still go through their Server Actions
+- `updateTodo` query + `updateTodoAction` (Zod `updateSchema` = create fields + `id`,
+  filtered by `user_id`); `DueDatePicker` gained an optional `defaultValue` (ISO yyyy-MM-dd)
+  to pre-fill when editing
+- Fixed: the "Task added" confirmation toast appeared twice (top + bottom). Two `<Toaster>`
+  were mounted — one in the root `app/layout.tsx` (default bottom-right) and one in the
+  `(app)` layout (top-center). Removed the root one; kept the top-center `(app)` Toaster
+
+### ✅ RSC auth dedup (complete, 2026-06-23)
+
+- `getCachedUser` in `lib/supabase/server.ts` wraps `auth.getUser()` in React `cache()` so a
+  single navigation validates the token once instead of per layout + page; all `(app)` pages
+  switched from `createClient().auth.getUser()` to `getCachedUser()`
+- Minor UI tweaks bundled: back-link on `/strength/new`, auto-domain `YAxis` on
+  `SparklineChart` so flat series aren't visually exaggerated

@@ -1,4 +1,7 @@
-import { Check, Trash2 } from "lucide-react";
+"use client";
+
+import { useState } from "react";
+import { Check, Pencil, Trash2 } from "lucide-react";
 import { formatInTimeZone } from "date-fns-tz";
 import { parseISO } from "date-fns";
 
@@ -6,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { isOverdue } from "@/lib/todos/sort";
 import { toggleTodoAction, deleteTodoAction } from "@/app/(app)/todos/actions";
 import type { Todo } from "@/lib/db/queries/todos";
+import { EditTodoForm } from "@/components/todos/EditTodoForm";
 import {
   priorityBadge,
   priorityBorder,
@@ -15,11 +19,20 @@ import {
 const TZ = "Europe/Bucharest";
 
 export function TodoItem({ todo, today }: { todo: Todo; today: string }) {
+  const [editing, setEditing] = useState(false);
   const done = todo.completedAt !== null;
   const overdue = isOverdue(todo, today);
   const dueLabel = todo.dueDate
     ? formatInTimeZone(parseISO(todo.dueDate), TZ, "d MMM")
     : null;
+
+  if (editing) {
+    return (
+      <li>
+        <EditTodoForm todo={todo} onDone={() => setEditing(false)} />
+      </li>
+    );
+  }
 
   return (
     <li
@@ -80,6 +93,16 @@ export function TodoItem({ todo, today }: { todo: Todo; today: string }) {
           {priorityLabel(todo.priority)}
         </span>
       )}
+
+      {/* Edit */}
+      <button
+        type="button"
+        onClick={() => setEditing(true)}
+        aria-label="Edit task"
+        className="text-muted-foreground hover:text-foreground transition-colors"
+      >
+        <Pencil className="size-4" />
+      </button>
 
       {/* Delete */}
       <form action={deleteTodoAction}>

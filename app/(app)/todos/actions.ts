@@ -8,6 +8,7 @@ import {
   createTodo,
   deleteTodo,
   setTodoCompleted,
+  updateTodo,
 } from "@/lib/db/queries/todos";
 
 const priorityEnum = z.enum(["low", "medium", "high"]);
@@ -61,6 +62,33 @@ export async function createTodoAction(
   }
 
   await createTodo(userId, parsed.data);
+  revalidateTodos();
+  return { ok: true };
+}
+
+const updateSchema = createSchema.extend({
+  id: z.string().uuid(),
+});
+
+export async function updateTodoAction(
+  _prev: TodoActionState,
+  formData: FormData,
+): Promise<TodoActionState> {
+  const userId = await currentUserId();
+  if (!userId) return { ok: false, error: "Not authenticated." };
+
+  const parsed = updateSchema.safeParse({
+    id: formData.get("id"),
+    title: formData.get("title"),
+    dueDate: normalizeDueDate(formData.get("dueDate")),
+    priority: formData.get("priority"),
+  });
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0].message };
+  }
+
+  const { id, ...input } = parsed.data;
+  await updateTodo(userId, id, input);
   revalidateTodos();
   return { ok: true };
 }
