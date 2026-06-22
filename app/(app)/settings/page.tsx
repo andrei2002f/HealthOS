@@ -12,7 +12,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { getRecentSyncLogs, getWhoopCredentials } from "@/lib/db/queries/whoop";
-import { createClient } from "@/lib/supabase/server";
+import { getCachedUser } from "@/lib/supabase/server";
 
 import { disconnectWhoop, syncNow } from "./actions";
 
@@ -22,10 +22,7 @@ export default async function SettingsPage({
   searchParams: Promise<SearchParams>;
 }) {
   const params = await searchParams;
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCachedUser();
 
   if (!user) return null;
 

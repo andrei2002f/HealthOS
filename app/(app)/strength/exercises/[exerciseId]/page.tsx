@@ -2,7 +2,7 @@ import { notFound, redirect } from "next/navigation"
 import Link from "next/link"
 import { formatInTimeZone } from "date-fns-tz"
 
-import { createClient } from "@/lib/supabase/server"
+import { getCachedUser } from "@/lib/supabase/server"
 import {
   getExercise,
   getExerciseHistory,
@@ -21,10 +21,7 @@ type Props = {
 export default async function ExerciseDetailPage({ params }: Props) {
   const { exerciseId } = await params
 
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  const user = await getCachedUser()
   if (!user) redirect("/login")
 
   const [exercise, history, pr] = await Promise.all([

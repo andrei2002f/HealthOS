@@ -6,6 +6,7 @@ import {
   Line,
   Tooltip,
   ReferenceLine,
+  YAxis,
 } from "recharts";
 
 type DataPoint = {
@@ -57,6 +58,7 @@ export function SparklineChart({
             );
           }}
         />
+        <YAxis domain={["auto", "auto"]} hide />
         <Line
           type="monotone"
           dataKey="value"

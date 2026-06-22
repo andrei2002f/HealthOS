@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { format } from "date-fns";
 
-import { createClient } from "@/lib/supabase/server";
+import { getCachedUser } from "@/lib/supabase/server";
 import { getTodayStats, getLast7Days } from "@/lib/db/queries/dashboard";
 import { RecoveryBadge } from "@/components/shared/RecoveryBadge";
 import { SparklineChart } from "@/components/charts/SparklineChart";
@@ -10,10 +10,7 @@ import { Button } from "@/components/ui/button";
 import { TodoWidget } from "@/components/todos/TodoWidget";
 
 export default async function DashboardPage() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCachedUser();
 
   const userId = user!.id;
 

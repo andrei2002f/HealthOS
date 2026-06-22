@@ -1,7 +1,7 @@
 import Link from "next/link"
 import { notFound, redirect } from "next/navigation"
 
-import { createClient } from "@/lib/supabase/server"
+import { getCachedUser } from "@/lib/supabase/server"
 import { getSupplement } from "@/lib/db/queries/supplements"
 import { SupplementForm } from "@/components/supplements/SupplementForm"
 import { ScheduleEditor } from "@/components/supplements/ScheduleEditor"
@@ -12,10 +12,7 @@ type Props = {
 }
 
 export default async function SupplementDetailPage({ params }: Props) {
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  const user = await getCachedUser()
   if (!user) redirect("/login")
 
   const { supplementId } = await params

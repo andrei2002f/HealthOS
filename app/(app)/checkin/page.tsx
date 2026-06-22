@@ -1,7 +1,8 @@
+import Link from "next/link";
 import { formatInTimeZone } from "date-fns-tz";
 import { parseISO } from "date-fns";
 
-import { createClient } from "@/lib/supabase/server";
+import { getCachedUser } from "@/lib/supabase/server";
 import { getCheckin } from "@/lib/db/queries/checkin";
 import { CheckinForm } from "@/components/checkin/CheckinForm";
 import { DateNav } from "@/components/checkin/DateNav";
@@ -13,10 +14,7 @@ type Props = {
 };
 
 export default async function CheckinPage({ searchParams }: Props) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCachedUser();
 
   const today = formatInTimeZone(new Date(), TZ, "yyyy-MM-dd");
   const { date: rawDate } = await searchParams;
@@ -32,6 +30,9 @@ export default async function CheckinPage({ searchParams }: Props) {
 
   return (
     <div className="mx-auto flex max-w-lg flex-col gap-4">
+      <Link href="/" className="text-sm text-muted-foreground hover:text-foreground">
+        ← Home
+      </Link>
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-xl font-semibold">Daily check-in</h1>

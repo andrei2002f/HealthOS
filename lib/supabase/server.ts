@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
+import { cache } from "react";
 
 /**
  * Supabase client for Server Components, Server Actions, and Route Handlers.
@@ -30,3 +31,19 @@ export async function createClient() {
     },
   );
 }
+
+/**
+ * Returns the authenticated user, deduplicated per request via React `cache()`.
+ *
+ * `auth.getUser()` validates the token against the Supabase Auth server over the
+ * network on every call. The layout and the page each need the user, so without
+ * memoization a single navigation pays for that round-trip twice. `cache()`
+ * collapses all calls within one RSC render into a single request.
+ */
+export const getCachedUser = cache(async () => {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  return user;
+});

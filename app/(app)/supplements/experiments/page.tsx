@@ -1,7 +1,7 @@
 import Link from "next/link"
 import { redirect } from "next/navigation"
 
-import { createClient } from "@/lib/supabase/server"
+import { getCachedUser } from "@/lib/supabase/server"
 import {
   getExperiments,
   getActiveSupplements,
@@ -16,10 +16,7 @@ import { ExperimentForm } from "@/components/supplements/ExperimentForm"
 import { ExperimentComparison } from "@/components/supplements/ExperimentComparison"
 
 export default async function ExperimentsPage() {
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  const user = await getCachedUser()
   if (!user) redirect("/login")
 
   const today = todayLocal()

@@ -2,7 +2,7 @@ import { notFound, redirect } from "next/navigation"
 import Link from "next/link"
 import { formatInTimeZone } from "date-fns-tz"
 
-import { createClient } from "@/lib/supabase/server"
+import { getCachedUser } from "@/lib/supabase/server"
 import { getStrengthSession } from "@/lib/db/queries/strength"
 import { PRBadge } from "@/components/strength/PRBadge"
 import { Badge } from "@/components/ui/badge"
@@ -16,10 +16,7 @@ type Props = {
 export default async function SessionDetailPage({ params }: Props) {
   const { sessionId } = await params
 
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  const user = await getCachedUser()
   if (!user) redirect("/login")
 
   const data = await getStrengthSession(user.id, sessionId)

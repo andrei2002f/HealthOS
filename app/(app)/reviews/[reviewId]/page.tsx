@@ -4,7 +4,7 @@ import { addDays } from "date-fns";
 import { formatInTimeZone } from "date-fns-tz";
 import { ArrowLeft } from "lucide-react";
 
-import { createClient } from "@/lib/supabase/server";
+import { getCachedUser } from "@/lib/supabase/server";
 import { getWeeklyReview } from "@/lib/db/queries/reviews";
 import { Markdown } from "@/components/shared/Markdown";
 
@@ -17,10 +17,7 @@ export default async function ReviewDetailPage({
 }) {
   const { reviewId } = await params;
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCachedUser();
 
   if (!user) notFound();
 

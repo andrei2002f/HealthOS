@@ -1,14 +1,11 @@
 import Link from "next/link"
 import { redirect } from "next/navigation"
 
-import { createClient } from "@/lib/supabase/server"
+import { getCachedUser } from "@/lib/supabase/server"
 import { SupplementForm } from "@/components/supplements/SupplementForm"
 
 export default async function NewSupplementPage() {
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  const user = await getCachedUser()
   if (!user) redirect("/login")
 
   return (

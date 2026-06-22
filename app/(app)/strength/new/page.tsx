@@ -1,7 +1,8 @@
+import Link from "next/link"
 import { formatInTimeZone } from "date-fns-tz"
 import { redirect } from "next/navigation"
 
-import { createClient } from "@/lib/supabase/server"
+import { getCachedUser } from "@/lib/supabase/server"
 import { getExercises, seedExercises } from "@/lib/db/queries/strength"
 import { SessionBuilder } from "@/components/strength/SessionBuilder"
 
@@ -12,10 +13,7 @@ type Props = {
 }
 
 export default async function NewSessionPage({ searchParams }: Props) {
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  const user = await getCachedUser()
   if (!user) redirect("/login")
 
   // Auto-seed exercises on first use
@@ -31,7 +29,13 @@ export default async function NewSessionPage({ searchParams }: Props) {
 
   return (
     <div className="mx-auto max-w-lg">
-      <h1 className="mb-4 text-xl font-semibold">New session</h1>
+      <Link
+        href="/strength"
+        className="text-sm text-muted-foreground hover:text-foreground"
+      >
+        ← Strength
+      </Link>
+      <h1 className="mb-4 mt-2 text-xl font-semibold">New session</h1>
       <SessionBuilder
         initialExercises={exercises}
         defaultDate={defaultDate}

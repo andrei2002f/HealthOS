@@ -1,7 +1,7 @@
 import Link from "next/link"
 import { redirect } from "next/navigation"
 
-import { createClient } from "@/lib/supabase/server"
+import { getCachedUser } from "@/lib/supabase/server"
 import {
   autoCreateBasketballSessions,
   getBasketballSessions,
@@ -18,10 +18,7 @@ type Props = {
 }
 
 export default async function BasketballPage({ searchParams }: Props) {
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  const user = await getCachedUser()
   if (!user) redirect("/login")
 
   // Materialise a session for any Whoop basketball workout that lacks one.

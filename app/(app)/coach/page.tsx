@@ -1,12 +1,9 @@
-import { createClient } from "@/lib/supabase/server";
+import { getCachedUser } from "@/lib/supabase/server";
 import { getCoachMessages } from "@/lib/db/queries/coach";
 import { CoachChat } from "@/components/coach/CoachChat";
 
 export default async function CoachPage() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCachedUser();
 
   const messages = user
     ? await getCoachMessages(user.id)

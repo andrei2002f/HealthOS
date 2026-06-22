@@ -1,16 +1,13 @@
 import Link from "next/link";
 
-import { createClient } from "@/lib/supabase/server";
+import { getCachedUser } from "@/lib/supabase/server";
 import { listTodos } from "@/lib/db/queries/todos";
 import { todayKey } from "@/lib/todos/sort";
 import { AddTodoForm } from "@/components/todos/AddTodoForm";
 import { TodoItem } from "@/components/todos/TodoItem";
 
 export default async function TodosPage() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCachedUser();
 
   const todos = await listTodos(user!.id);
   const today = todayKey();

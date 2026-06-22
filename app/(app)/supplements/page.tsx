@@ -2,7 +2,7 @@ import Link from "next/link"
 import { redirect } from "next/navigation"
 import { FlaskConical } from "lucide-react"
 
-import { createClient } from "@/lib/supabase/server"
+import { getCachedUser } from "@/lib/supabase/server"
 import {
   getTodayIntakeStatus,
   getAdherenceGrid,
@@ -13,10 +13,7 @@ import { AdherenceGrid } from "@/components/supplements/AdherenceGrid"
 import { Button } from "@/components/ui/button"
 
 export default async function SupplementsPage() {
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  const user = await getCachedUser()
   if (!user) redirect("/login")
 
   const today = todayLocal()

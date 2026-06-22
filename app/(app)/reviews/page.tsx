@@ -2,7 +2,7 @@ import Link from "next/link";
 import { formatInTimeZone } from "date-fns-tz";
 import { addDays } from "date-fns";
 
-import { createClient } from "@/lib/supabase/server";
+import { getCachedUser } from "@/lib/supabase/server";
 import { getWeeklyReviews } from "@/lib/db/queries/reviews";
 import { Card, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 
@@ -17,10 +17,7 @@ function weekRangeLabel(weekStart: string): string {
 }
 
 export default async function ReviewsPage() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCachedUser();
 
   const reviews = user ? await getWeeklyReviews(user.id) : [];
 
