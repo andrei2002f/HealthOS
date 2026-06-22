@@ -331,3 +331,28 @@ At the start of each session, tell me which week we're in and what's the next pl
 - Push notifications for review-ready deferred (consistent with Week 5)
 - Lesson learned: Anthropic streaming uses `content_block_delta` / `text_delta` chunks;
   `ReadableStream.tee()` lets you both pipe SSE to client and accumulate for DB save
+
+### ✅ Todo list (complete, 2026-06-22)
+
+First step in broadening the app beyond fitness ("more all-rounded"). Design spec:
+`docs/superpowers/specs/2026-06-22-todos-design.md`.
+
+- New `todos` table (title, optional `due_date`, `priority` text default `medium`,
+  `completed_at` null=active) with RLS owner policy — migration `0003_*`
+- `/todos` — add form (title + due date + priority) and list; completed tasks stay
+  visible, struck through and greyed, at the bottom; toggle/delete via Server Actions
+- Pure sort comparator `lib/todos/sort.ts` (active→completed, overdue→priority→due→
+  created; "overdue" relative to Europe/Bucharest) with Vitest tests
+- Home dashboard widget (`TodoWidget`) showing active tasks + "View all →"; new
+  "Todos" tab in `MainNav` (6th tab)
+- Priority colours (red/amber/slate) shared via `components/todos/priority.ts` — dot,
+  left accent border, tinted badge
+- Due dates display day-first (`d MMM`). The add form uses a custom shadcn Calendar +
+  Popover picker (`DueDatePicker`, dd/MM/yyyy, en-GB Monday-start) instead of a native
+  `<input type="date">`, because Chrome formats the native field from the browser UI
+  language (ignores `lang`), which forced mm/dd/yyyy
+- Lesson learned: `react-hooks/set-state-in-effect` is an error here — don't call
+  `setState` directly in an effect body. The date picker clears itself by listening for
+  the form's native `reset` event (fired by `formRef.reset()` on successful add) rather
+  than via lifted state reset in the success effect
+- New dependency: `react-day-picker` (via `shadcn add calendar popover`)

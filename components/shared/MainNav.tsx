@@ -3,6 +3,7 @@
 import {
   Dumbbell,
   Home,
+  ListTodo,
   MessageCircle,
   Pill,
   Volleyball,
@@ -14,6 +15,7 @@ import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
   { href: "/", label: "Home", icon: Home },
+  { href: "/todos", label: "Todos", icon: ListTodo },
   { href: "/strength", label: "Strength", icon: Dumbbell },
   { href: "/basketball", label: "Basketball", icon: Volleyball },
   { href: "/supplements", label: "Supplements", icon: Pill },

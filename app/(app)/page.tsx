@@ -7,6 +7,7 @@ import { RecoveryBadge } from "@/components/shared/RecoveryBadge";
 import { SparklineChart } from "@/components/charts/SparklineChart";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { TodoWidget } from "@/components/todos/TodoWidget";
 
 export default async function DashboardPage() {
   const supabase = await createClient();
@@ -125,6 +126,9 @@ export default async function DashboardPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* ── Todos ───────────────────────────────────────────────────────── */}
+      <TodoWidget userId={userId} />
 
       {/* ── 7-day mini charts ──────────────────────────────────────────── */}
       <h2 className="text-sm font-semibold text-muted-foreground">
