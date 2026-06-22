@@ -509,3 +509,21 @@ export const syncLogs = pgTable(
     ownerPolicy("sync_logs"),
   ],
 );
+
+// ─────────────────────────────────── Todos ───────────────────────────────────
+
+export const todos = pgTable(
+  "todos",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => authUsers.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    dueDate: date("due_date"),
+    priority: text("priority").notNull().default("medium"), // 'low' | 'medium' | 'high'
+    completedAt: timestamp("completed_at", { withTimezone: true }), // null = active
+    ...timestamps,
+  },
+  (t) => [index("todos_user_idx").on(t.userId), ownerPolicy("todos")],
+);
