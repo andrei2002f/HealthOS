@@ -64,13 +64,23 @@ export class WhoopClient {
     throw new Error("Unexpected end of retry loop");
   }
 
-  async *paginate<T>(path: string): AsyncGenerator<T> {
+  /**
+   * Iterate every record across all pages. `params` (e.g. `{ start }`) are
+   * applied to each request so callers can fetch incrementally; `nextToken`
+   * is merged in automatically for pagination.
+   */
+  async *paginate<T>(
+    path: string,
+    params?: Record<string, string>,
+  ): AsyncGenerator<T> {
     let nextToken: string | null = null;
 
     do {
-      const url: string = nextToken
-        ? `${path}?nextToken=${encodeURIComponent(nextToken)}`
-        : path;
+      const query = new URLSearchParams(params);
+      if (nextToken) query.set("nextToken", nextToken);
+      const qs = query.toString();
+      const url = qs ? `${path}?${qs}` : path;
+
       const page: WhoopPagedResponse<T> =
         await this.request<WhoopPagedResponse<T>>(url);
       for (const record of page.records) yield record;

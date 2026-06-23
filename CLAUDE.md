@@ -376,3 +376,19 @@ First step in broadening the app beyond fitness ("more all-rounded"). Design spe
   switched from `createClient().auth.getUser()` to `getCachedUser()`
 - Minor UI tweaks bundled: back-link on `/strength/new`, auto-domain `YAxis` on
   `SparklineChart` so flat series aren't visually exaggerated
+
+### ✅ Incremental Whoop sync (complete, 2026-06-23)
+
+- Bug: cron syncs stuck on `status="running"` forever. Root cause: `syncWhoop` pulled the
+  **full history** every run, so duration grew with the data (`18s → 49s → 77s`). On Vercel
+  Hobby (`maxDuration` capped at 60s) the function was killed mid-run before `updateSyncLog`
+  could write `success`/`error` — and a hard kill skips the `catch`, so the row stayed
+  `running`. The 77s run that succeeded had run **locally** (no time limit)
+- Fix: `WhoopClient.paginate(path, params?)` now takes query params and merges them with
+  `nextToken`; `syncWhoop` passes `start = lastSyncedAt − 3 days` to all four v2 endpoints.
+  Only the first sync (no `lastSyncedAt`) pulls full history. 3-day overlap re-fetches
+  recovery/sleep that Whoop recomputes after the fact; idempotent upsert makes overlap safe
+- Healed the 3 stuck rows → `error` with an explanatory message
+- Lesson: a serverless timeout kills the process without running `catch`/`finally`, so any
+  "started" row written before the work will leak as `running`. Keep per-run work bounded
+  (incremental), don't rely on a `catch` to clean up after a timeout
