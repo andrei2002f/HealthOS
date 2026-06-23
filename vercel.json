@@ -1,7 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "crons": [
-    { "path": "/api/whoop/sync", "schedule": "0 6 * * *" },
+    { "path": "/api/whoop/sync", "schedule": "0 4,5 * * *" },
     { "path": "/api/reviews/generate", "schedule": "0 18 * * 0" }
   ]
 }
