@@ -1,5 +1,11 @@
 import { formatDistanceToNow } from "date-fns";
-import { CheckCircle2, RefreshCw, Unplug, WifiOff } from "lucide-react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  RefreshCw,
+  Unplug,
+  WifiOff,
+} from "lucide-react";
 import type { SearchParams } from "next/dist/server/request/search-params";
 
 import { Badge } from "@/components/ui/badge";
@@ -13,6 +19,7 @@ import {
 } from "@/components/ui/card";
 import { getRecentSyncLogs, getWhoopCredentials } from "@/lib/db/queries/whoop";
 import { getCachedUser } from "@/lib/supabase/server";
+import { TIMED_OUT, displaySyncStatus, formatJob } from "@/lib/sync-logs/status";
 
 import { disconnectWhoop, syncNow } from "./actions";
 
@@ -117,52 +124,70 @@ export default async function SettingsPage({
           </CardHeader>
           <CardContent>
             <ul className="divide-y divide-border text-sm">
-              {logs.map((log) => (
-                <li key={log.id} className="flex items-start gap-3 py-2">
-                  <span className="mt-0.5 shrink-0">
-                    {log.status === "success" ? (
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
-                    ) : log.status === "error" ? (
-                      <span className="text-base leading-none text-red-500">
-                        ✗
-                      </span>
-                    ) : (
-                      <RefreshCw className="h-4 w-4 animate-spin text-muted-foreground" />
-                    )}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Badge
-                        variant={
-                          log.status === "success"
-                            ? "default"
-                            : log.status === "error"
-                              ? "destructive"
-                              : "secondary"
-                        }
-                        className="text-xs"
-                      >
-                        {log.status}
-                      </Badge>
-                      <span className="text-muted-foreground">
-                        {formatDistanceToNow(log.startedAt, {
-                          addSuffix: true,
-                        })}
-                      </span>
-                      {log.recordsSynced != null && (
-                        <span className="text-muted-foreground">
-                          · {log.recordsSynced} records
+              {logs.map((log) => {
+                const status = displaySyncStatus(log);
+
+                return (
+                  <li key={log.id} className="flex items-start gap-3 py-2">
+                    <span className="mt-0.5 shrink-0">
+                      {status === "success" ? (
+                        <CheckCircle2 className="h-4 w-4 text-green-500" />
+                      ) : status === "error" ? (
+                        <span className="text-base leading-none text-red-500">
+                          ✗
                         </span>
+                      ) : status === TIMED_OUT ? (
+                        <AlertTriangle className="h-4 w-4 text-muted-foreground" />
+                      ) : (
+                        <RefreshCw className="h-4 w-4 animate-spin text-muted-foreground" />
+                      )}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge
+                          variant={
+                            status === "success"
+                              ? "default"
+                              : status === "error"
+                                ? "destructive"
+                                : status === TIMED_OUT
+                                  ? "outline"
+                                  : "secondary"
+                          }
+                          className="text-xs"
+                        >
+                          {status === TIMED_OUT ? "timed out" : status}
+                        </Badge>
+                        <span className="text-muted-foreground">
+                          {formatJob(log.job)}
+                        </span>
+                        <span className="text-muted-foreground">
+                          ·{" "}
+                          {formatDistanceToNow(log.startedAt, {
+                            addSuffix: true,
+                          })}
+                        </span>
+                        {log.recordsSynced != null && (
+                          <span className="text-muted-foreground">
+                            · {log.recordsSynced} records
+                          </span>
+                        )}
+                      </div>
+                      {status === TIMED_OUT && (
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          Interrupted — the run never reported back, most likely
+                          a serverless timeout.
+                        </p>
+                      )}
+                      {log.error && (
+                        <p className="mt-0.5 truncate text-xs text-red-500">
+                          {log.error}
+                        </p>
                       )}
                     </div>
-                    {log.error && (
-                      <p className="mt-0.5 truncate text-xs text-red-500">
-                        {log.error}
-                      </p>
-                    )}
-                  </div>
-                </li>
-              ))}
+                  </li>
+                );
+              })}
             </ul>
           </CardContent>
         </Card>
