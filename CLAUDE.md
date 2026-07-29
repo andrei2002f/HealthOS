@@ -392,3 +392,24 @@ First step in broadening the app beyond fitness ("more all-rounded"). Design spe
 - Lesson: a serverless timeout kills the process without running `catch`/`finally`, so any
   "started" row written before the work will leak as `running`. Keep per-run work bounded
   (incremental), don't rely on a `catch` to clean up after a timeout
+
+### ✅ Sync history display + cron deploy fix (complete, 2026-07-30)
+
+- `lib/sync-logs/status.ts` (+ Vitest tests): `displaySyncStatus()` reclassifies a
+  `running` row older than 5 min as `timed_out` (no Vercel function here can outlive
+  that); `formatJob()` labels the row, since `sync_logs` mixes `whoop_sync` and
+  `weekly_review`. Settings sync history renders that instead of the raw status —
+  a warning icon and "timed out" badge, not a spinner. Read-only: stuck rows are
+  **not** rewritten in the DB
+- **Vercel deploys had been failing since 2026-06-23** (commit `a8df07a`). That commit
+  set the Whoop cron to `0 4,5 * * *` — two invocations a day — and **Hobby rejects a
+  sub-daily cron expression at deploy time**, so every deploy since then failed the
+  build. Reverted to `0 4 * * *` and deleted the `localHour !== 7` guard in
+  `app/api/whoop/sync/route.ts` (with a single daily fire, the guard would have skipped
+  every run in winter)
+- **Cron rule for this repo: exactly one invocation per day per cron, and never chase a
+  precise local hour.** Hobby guarantees only ±59 min scheduling precision, so the DST
+  trick was unachievable even when it deployed. Sync now runs 07:00 local in summer,
+  06:00 in winter — the drift does not matter for a daily pull.
+  `chore: drop sub-daily cron (Hobby plan limit)` (`0766e64`) had already fixed this
+  once; it was reintroduced five months later
