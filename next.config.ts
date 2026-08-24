@@ -2,6 +2,11 @@ import withSerwistInit from "@serwist/next";
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Emit a self-contained server bundle with only the traced dependencies, so
+  // the Docker runtime stage can drop node_modules entirely. Note that Next
+  // does not copy `public/` or `.next/static` into it — the Dockerfile does.
+  output: "standalone",
+
   // Empty Turbopack config silences the "webpack config + Turbopack" error in
   // `next dev`. Serwist attaches a webpack config; the production build runs
   // with `--webpack` so the service worker is still generated. See CLAUDE.md.

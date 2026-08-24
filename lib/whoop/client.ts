@@ -6,7 +6,10 @@ import { env } from "@/lib/env";
 import { refreshAccessToken } from "@/lib/whoop/oauth";
 import type { WhoopPagedResponse } from "./types";
 
-const BASE = env.WHOOP_API_HOSTNAME;
+// Read at call time, not at import: a module-level read would run during
+// `next build` and make the build require the environment. See ADR-0003.
+const base = () => env.WHOOP_API_HOSTNAME;
+
 const TOKEN_REFRESH_THRESHOLD_MS = 10 * 60 * 1000; // refresh when <10 min remaining
 const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 1000;
@@ -39,7 +42,7 @@ export class WhoopClient {
     const token = await this.getAccessToken();
 
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-      const res = await fetch(`${BASE}${path}`, {
+      const res = await fetch(`${base()}${path}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
 

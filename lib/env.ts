@@ -3,7 +3,7 @@ import "server-only";
 import { z } from "zod";
 
 /**
- * Server-side environment variables, validated once at import.
+ * Server-side environment variables, validated on first read.
  *
  * Do NOT import this module from Client Components — it is guarded by
  * `server-only` and references secrets that are never sent to the browser.
@@ -37,13 +37,50 @@ const envSchema = z.object({
   CRON_SECRET: z.string().min(1),
 });
 
-const parsed = envSchema.safeParse(process.env);
+type Env = z.infer<typeof envSchema>;
 
-if (!parsed.success) {
-  const issues = parsed.error.issues
-    .map((i) => `  - ${i.path.join(".")}: ${i.message}`)
-    .join("\n");
-  throw new Error(`Invalid environment variables:\n${issues}`);
+let cached: Env | undefined;
+
+/**
+ * Validates the environment on first call, then memoizes.
+ *
+ * Validation is deliberately deferred rather than run at import: `next build`
+ * loads every route module to prerender it, so parsing at import time would
+ * make the production build require production secrets. The container image is
+ * built without any, and `instrumentation.ts` calls this at server startup so a
+ * misconfigured deployment still fails fast instead of on the first request.
+ *
+ * Reading the whole `process.env` object (rather than named properties) also
+ * keeps these values out of Next's build-time inlining, so one image can run
+ * against different environments. `NEXT_PUBLIC_*` is the exception — Next
+ * substitutes those textually at build time wherever they are referenced.
+ */
+export function loadEnv(): Env {
+  if (!cached) {
+    const parsed = envSchema.safeParse(process.env);
+
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((i) => `  - ${i.path.join(".")}: ${i.message}`)
+        .join("\n");
+      throw new Error(`Invalid environment variables:\n${issues}`);
+    }
+
+    cached = parsed.data;
+  }
+
+  return cached;
 }
 
-export const env = parsed.data;
+/**
+ * Validated environment. Property access triggers validation on first read, so
+ * call sites are identical to the previous eagerly-parsed object.
+ */
+export const env = new Proxy({} as Env, {
+  get(_target, prop) {
+    // Runtimes probe objects with symbol keys (inspection, `await`). Answering
+    // those without validating avoids surprise throws from unrelated code.
+    if (typeof prop === "symbol") return undefined;
+    return loadEnv()[prop as keyof Env];
+  },
+});

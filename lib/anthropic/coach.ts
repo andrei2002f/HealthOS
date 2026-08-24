@@ -1,6 +1,6 @@
 import "server-only";
 
-import { anthropic, MODEL } from "./client";
+import { getAnthropic, getModel } from "./client";
 import { COACH_SYSTEM_PROMPT } from "./prompts";
 import { buildUserContext } from "./context";
 
@@ -35,8 +35,8 @@ ${contextBlock}`;
 
   // Use create({stream: true}) for a raw RawMessageStreamEvent iterator —
   // simpler than the MessageStream wrapper and works reliably with for-await.
-  const stream = await anthropic.messages.create({
-    model: MODEL,
+  const stream = await getAnthropic().messages.create({
+    model: getModel(),
     max_tokens: 1024,
     system: systemPrompt,
     messages,

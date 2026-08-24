@@ -20,11 +20,22 @@ const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12;
 const AUTH_TAG_LENGTH = 16;
 
-const key = createHash("sha256").update(env.ENCRYPTION_KEY).digest();
+let cachedKey: Buffer | undefined;
+
+/**
+ * Derived on first use, not at import: `next build` loads the modules that
+ * reach this one, and reading ENCRYPTION_KEY there would make the build
+ * require it. See docs/DECISIONS.md, ADR-0003.
+ */
+function getKey(): Buffer {
+  return (cachedKey ??= createHash("sha256")
+    .update(env.ENCRYPTION_KEY)
+    .digest());
+}
 
 export function encrypt(plaintext: string): string {
   const iv = randomBytes(IV_LENGTH);
-  const cipher = createCipheriv(ALGORITHM, key, iv);
+  const cipher = createCipheriv(ALGORITHM, getKey(), iv);
   const ciphertext = Buffer.concat([
     cipher.update(plaintext, "utf8"),
     cipher.final(),
@@ -38,7 +49,7 @@ export function decrypt(payload: string): string {
   const iv = buffer.subarray(0, IV_LENGTH);
   const authTag = buffer.subarray(IV_LENGTH, IV_LENGTH + AUTH_TAG_LENGTH);
   const ciphertext = buffer.subarray(IV_LENGTH + AUTH_TAG_LENGTH);
-  const decipher = createDecipheriv(ALGORITHM, key, iv);
+  const decipher = createDecipheriv(ALGORITHM, getKey(), iv);
   decipher.setAuthTag(authTag);
   return Buffer.concat([
     decipher.update(ciphertext),

@@ -3,7 +3,7 @@ import "server-only";
 import { startOfWeek, subWeeks, formatISO } from "date-fns";
 import { toZonedTime } from "date-fns-tz";
 
-import { anthropic, MODEL } from "./client";
+import { getAnthropic, getModel } from "./client";
 import { WEEKLY_REVIEW_SYSTEM_PROMPT } from "./prompts";
 import { buildUserContext } from "./context";
 
@@ -36,8 +36,8 @@ Here is the user's data for context:
 
 ${contextBlock}`;
 
-  const response = await anthropic.messages.create({
-    model: MODEL,
+  const response = await getAnthropic().messages.create({
+    model: getModel(),
     max_tokens: 1500,
     system: WEEKLY_REVIEW_SYSTEM_PROMPT,
     messages: [{ role: "user", content: userPrompt }],

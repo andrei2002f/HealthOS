@@ -1,0 +1,58 @@
+# Local development stack.
+#
+# Run it with:
+#
+#   docker compose --env-file .env.local up --build
+#
+# The --env-file flag is required because Compose interpolates ${VAR} in THIS
+# file from `.env` by default, and this repo keeps its variables in `.env.local`.
+# The `env_file:` key below is a separate mechanism: it sets variables inside
+# the running container. Both are needed — one feeds the build, one the runtime.
+#
+# What is deliberately NOT here: Supabase Auth (GoTrue), the Whoop API and the
+# Anthropic API. See docs/DECISIONS.md, ADR-0004.
+
+name: healthos
+
+services:
+  app:
+    build:
+      context: .
+      args:
+        # Baked into the bundles at build time — see the Dockerfile comment on
+        # why NEXT_PUBLIC_* cannot be deferred to runtime.
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env.local
+    restart: unless-stopped
+
+  # A local Postgres for running migrations against and, from Phase 2, for
+  # integration tests. The app service above does NOT point at it: the app
+  # authenticates against the hosted Supabase project, and every table has a
+  # foreign key to auth.users, so a local database would have no user rows to
+  # satisfy those keys. Pointing the app here would mean running the app's Auth
+  # and its data against two different databases.
+  postgres:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: healthos
+    ports:
+      - "5432:5432"
+    volumes:
+      # Runs once, on an empty data directory, before anything else connects.
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d healthos"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  postgres-data:
