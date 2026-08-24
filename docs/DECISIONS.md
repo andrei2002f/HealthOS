@@ -364,3 +364,245 @@ gap to name in Phase 2 rather than paper over.
   applies to any Postgres. Rejected outright: the tests would then run against
   different DDL than production, which defeats the purpose of testing against a
   real database.
+
+---
+
+## ADR-0007 — Repairing migration 0001 rather than working around it
+
+**Status:** accepted · Phase 2
+
+### Context
+
+ADR-0006 recorded that the migration chain could not be replayed onto an empty
+database. Three ways forward were considered: repair `0001` in place, squash the
+history into a single baseline migration, or leave it broken and build test
+schemas with `drizzle-kit push`.
+
+### Decision
+
+Repair `0001` in place. It now drops the four affected foreign keys, performs
+the nine `ALTER COLUMN` statements, and recreates the keys with identical
+definitions.
+
+### Why editing an applied migration is safe here
+
+This is the part that had to be established before touching the file, since
+production records `0001` as applied. Reading drizzle's migrator settles it:
+
+```js
+// drizzle-orm/pg-core/dialect.js
+select id, hash, created_at from drizzle.__drizzle_migrations
+  order by created_at desc limit 1
+...
+if (!lastDbMigration || Number(lastDbMigration.created_at) < migration.folderMillis)
+```
+
+It fetches only the **newest** applied row and compares its `created_at` against
+each journal entry's `when`. The stored `hash` is written on insert and never
+read back for comparison. A migration older than the newest applied one is
+therefore skipped regardless of its content.
+
+Confirmed empirically rather than inferred: a local database was migrated to the
+end state, the recorded hash for `0001` was overwritten with the pre-repair
+file's hash to reproduce production exactly, and `drizzle-kit migrate` was run
+again. It exited 0, applied nothing (4 migrations before, 4 after), left the
+stale hash in place, and changed no tables.
+
+A side effect worth knowing: because the hash is never verified, drizzle will
+not warn if a migration file is altered after being applied. That is convenient
+here and a hazard in general.
+
+### Consequences
+
+- The chain replays from empty: 20 tables, 20 policies, 4 recorded migrations.
+- Production is untouched and will stay untouched.
+- The whole migrator loop runs in **one transaction**, so a failure anywhere
+  rolls back everything — which is why the original failure left a completely
+  empty database rather than a half-applied one.
+
+### Rejected
+
+- **Squash to a baseline migration.** Cleanest end state, but it discards the
+  schema's history and requires hand-inserting a row into production's
+  `__drizzle_migrations` so the baseline is not re-run. Manual synchronisation
+  against a live database, to fix a problem that has a mechanical fix.
+- **Leave it broken; build test schemas with `drizzle-kit push`.** Zero risk and
+  fastest to start, but the tests would then verify a schema built by a path
+  production never takes. That is precisely the gap that let this defect survive
+  five months.
+
+---
+
+## ADR-0008 — Vitest, split into two suites, against a real Postgres
+
+**Status:** accepted · Phase 2
+
+### Decision
+
+Keep Vitest. Split the run into a `unit` project and an `integration` project.
+Integration tests connect to the `postgres:17` service already defined in
+`docker-compose.yml`.
+
+### Rationale
+
+Vitest was already in the repo with 33 passing tests, runs TypeScript and ESM
+through esbuild with no Babel configuration, and needs no separate transform
+step for the `@/` alias — Vite resolves `tsconfig` paths natively. Jest would
+have meant a transform pipeline to configure and nothing gained.
+
+The split exists because the two suites have incompatible costs. The unit suite
+runs in ~1.2 s and can run on every save; the integration suite needs a live
+database and runs serially. Keeping them separate means CI can fail on the cheap
+one before paying for the expensive one.
+
+**No mocked database.** A mocked Drizzle asserts that the query builder was
+called with certain arguments, which restates the implementation rather than
+testing it. Every property worth checking here — `ON CONFLICT` resolution,
+`ON DELETE cascade`, a `LEFT JOIN` preventing duplicates — is behaviour that
+lives in Postgres and cannot be observed anywhere else.
+
+**Schema built from the migration chain, not from `drizzle-kit push`.** The
+global setup applies `drizzle/` to an empty database on every run. This is what
+makes the suite meaningful: production's schema comes from those files, so the
+tests must use the same DDL. It also turns "the migrations replay" into a check
+that runs on every CI push — the check whose absence let ADR-0007's defect live
+for five months.
+
+### Details worth defending
+
+- **The connection string is read from `TEST_DATABASE_URL`**, deliberately a
+  different variable from `DATABASE_URL`, and a guard rejects any host that is
+  not local or that contains "supabase". The suite truncates every table between
+  tests; a misconfigured environment variable would otherwise destroy real data.
+- **The auth shim is applied by the test setup**, not left to Postgres's
+  `docker-entrypoint-initdb.d`, so the suite works against any empty database —
+  including a GitHub Actions service container, which cannot mount init scripts.
+  This matters for Phase 4.
+- **Isolation is truncate-per-test**, not transaction-rollback-per-test. Rollback
+  is faster but breaks as soon as the code under test opens its own transaction,
+  which the sync path does.
+- **The tests use the application's own `db` instance**, redirected by setting
+  `DATABASE_URL` before the first import. That works only because Phase 1 made
+  the connection pool lazy — an unplanned dividend of ADR-0003.
+
+### Rejected
+
+- **testcontainers-node.** Better isolation and no manual setup step, at the
+  cost of a heavy dependency, 5–15 s of container startup per run, and
+  Docker-in-Docker in CI, which would eat into Phase 4's runtime budget.
+- **`pg-mem` or another in-process fake.** Instant and dependency-free, but it
+  implements neither RLS nor the DDL this schema uses, so the migrations would
+  not apply — losing exactly the test that matters most.
+
+---
+
+## ADR-0009 — Extracting the Whoop payload mappers
+
+**Status:** accepted · Phase 2
+
+### Context
+
+`lib/db/queries/whoop.ts` held roughly 370 lines in which payload
+transformation and database writes were interleaved. Each upsert also spelled
+every transformation **twice**: once in `values` and again in
+`onConflictDoUpdate.set`.
+
+### Decision
+
+Move the transformations into `lib/whoop/mappers.ts` as pure functions, and
+derive the conflict update from the mapped row via `updateSetFor(row, immutable)`.
+
+### Rationale
+
+Two separate wins, and the second is the more important one.
+
+The transformations are where the interesting failures live — `score: null` on
+an unscored record, a missing `zone_zero_milli`, an unknown `sport_id`, a null
+distance that must not become `"0"`. Pure functions make those cases trivial to
+cover; through a database they would be slow to write and slower to run.
+
+More significantly, the duplicated conflict set was an active defect generator.
+`sport_name` was once missing from it, so when `SPORT_ID_MAP` was corrected
+(Basketball was 35, should have been 17), re-syncing never relabelled the
+existing rows. Two copies of an expression drift, and nothing forces them back
+together. Deriving the update from the inserted row removes the second copy, and
+"which columns are immutable" becomes an explicit, named list instead of an
+omission nobody notices.
+
+### Consequence
+
+`sportName` is deliberately **not** in `WORKOUT_IMMUTABLE`, precisely so a
+corrected sport map can heal existing rows. There is a test for that.
+
+---
+
+## ADR-0010 — Where to mock a non-deterministic dependency
+
+**Status:** accepted · Phase 2
+
+### Decision
+
+The coach tests mock `getAnthropic()` — our own function, which returns the SDK
+client. Not `fetch`, and not `streamCoachReply` itself.
+
+### The principle
+
+**Mock at the narrowest seam you own, immediately below the code under test.**
+
+Below `getAnthropic()` is Anthropic's code. Mocking lower, at `fetch`, would
+mean hand-writing their SSE wire format inside the test — a reimplementation of
+someone else's protocol. Such a test keeps passing when they change the wire
+format and the real integration breaks, and it fails on an SDK upgrade that
+changed nothing we depend on. A test that fails for reasons unrelated to your
+code is a test people learn to ignore.
+
+Mocking higher, at `streamCoachReply`, would leave nothing under test at all.
+
+### What that leaves worth testing
+
+Only what we wrote: that the context block and the capped history are assembled
+into the request, that the model id comes from the environment rather than a
+hardcoded string, and that the model's token stream is translated into
+well-formed SSE — including the case that actually hurts, where the upstream
+connection drops mid-reply and the stream must emit an error frame and close
+rather than leaving the browser holding an open socket and half a sentence.
+
+The quality of what the model says is not a property a test can assert, and none
+of these try.
+
+---
+
+## ADR-0011 — What is deliberately not tested
+
+**Status:** accepted · Phase 2
+
+Coverage was not a target. These are the gaps, stated so they are not mistaken
+for oversights.
+
+**React components and end-to-end page rendering.** Would require Playwright and
+a browser — a different order of investment, and not where this application
+breaks. Its failures have been in data transformation, sync scheduling, and
+migrations.
+
+**The Whoop OAuth flow against the real authorisation server.** Cannot be
+exercised without live credentials and a browser redirect. Token *refresh* logic
+is covered with `fetch` mocked, which is the part with branching behaviour.
+
+**Row-level security policies.** The most important omission. The application
+connects as the database owner, so RLS is never evaluated on the Drizzle path —
+the `user_id` filter in each query is the real access control, and that *is*
+tested. Writing tests that assume the `authenticated` role would verify a code
+path production does not take. The honest statement is that RLS is currently a
+backstop for a path this app does not use, not an enforced boundary.
+
+**Multi-user isolation beyond query scoping.** One test pins a genuine
+limitation instead: `whoop_workouts` is keyed on the Whoop id alone rather than
+on `(user_id, id)`, so the same Whoop id arriving for two accounts would produce
+one row owned by the first user carrying the second user's data. Harmless while
+this is a single-user application; it would need a composite primary key before
+a second real user existed.
+
+**The `syncWhoop` orchestration function end to end.** Its pieces are covered
+(client, mappers, upserts) but the loop that joins them is not. It is
+mostly sequencing, and covering it would mean mocking four paginated endpoints
+for little information gained.

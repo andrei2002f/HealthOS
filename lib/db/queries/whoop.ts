@@ -11,13 +11,19 @@ import {
   whoopSleep,
   whoopWorkouts,
 } from "@/lib/db/schema";
+import {
+  toCycleRow,
+  toRecoveryRow,
+  toSleepRow,
+  toWorkoutRow,
+  updateSetFor,
+} from "@/lib/whoop/mappers";
 import type {
   WhoopCycle,
   WhoopRecovery,
   WhoopSleep,
   WhoopWorkout,
 } from "@/lib/whoop/types";
-import { sportName } from "@/lib/whoop/types";
 
 // ─── Credentials ─────────────────────────────────────────────────────────────
 
@@ -82,192 +88,85 @@ export async function markWhoopSynced(userId: string): Promise<void> {
 
 // ─── Cycles ──────────────────────────────────────────────────────────────────
 
+/** A cycle's identity and start instant never change once Whoop has issued it. */
+const CYCLE_IMMUTABLE = ["id", "userId", "startAt"] as const;
+
 export async function upsertCycle(
   userId: string,
   cycle: WhoopCycle,
 ): Promise<void> {
-  const raw = cycle as unknown as Record<string, unknown>;
+  const row = toCycleRow(userId, cycle);
+
   await db
     .insert(whoopCycles)
-    .values({
-      id: String(cycle.id),
-      userId,
-      startAt: new Date(cycle.start),
-      endAt: cycle.end ? new Date(cycle.end) : null,
-      strain: cycle.score?.strain?.toString() ?? null,
-      kilojoules: cycle.score?.kilojoule?.toString() ?? null,
-      averageHeartRate: cycle.score?.average_heart_rate ?? null,
-      maxHeartRate: cycle.score?.max_heart_rate ?? null,
-      raw,
-    })
+    .values(row)
     .onConflictDoUpdate({
       target: whoopCycles.id,
-      set: {
-        endAt: cycle.end ? new Date(cycle.end) : null,
-        strain: cycle.score?.strain?.toString() ?? null,
-        kilojoules: cycle.score?.kilojoule?.toString() ?? null,
-        averageHeartRate: cycle.score?.average_heart_rate ?? null,
-        maxHeartRate: cycle.score?.max_heart_rate ?? null,
-        raw,
-        updatedAt: new Date(),
-      },
+      set: updateSetFor(row, CYCLE_IMMUTABLE),
     });
 }
 
 // ─── Recovery ────────────────────────────────────────────────────────────────
 
+/** Recovery is keyed on its cycle; both links are part of its identity. */
+const RECOVERY_IMMUTABLE = ["id", "userId", "cycleId", "sleepId"] as const;
+
 export async function upsertRecovery(
   userId: string,
   recovery: WhoopRecovery,
 ): Promise<void> {
-  const raw = recovery as unknown as Record<string, unknown>;
+  const row = toRecoveryRow(userId, recovery);
+
   await db
     .insert(whoopRecovery)
-    .values({
-      id: String(recovery.cycle_id), // recovery uses cycle_id as its PK
-      userId,
-      cycleId: String(recovery.cycle_id),
-      sleepId: String(recovery.sleep_id),
-      recoveryScore: recovery.score?.recovery_score ?? null,
-      hrvRmssdMs: recovery.score?.hrv_rmssd_milli?.toString() ?? null,
-      restingHeartRate: recovery.score?.resting_heart_rate ?? null,
-      spo2Percent: recovery.score?.spo2_percentage?.toString() ?? null,
-      skinTempCelsius: recovery.score?.skin_temp_celsius?.toString() ?? null,
-      scoredAt: new Date(recovery.updated_at),
-      raw,
-    })
+    .values(row)
     .onConflictDoUpdate({
       target: whoopRecovery.id,
-      set: {
-        recoveryScore: recovery.score?.recovery_score ?? null,
-        hrvRmssdMs: recovery.score?.hrv_rmssd_milli?.toString() ?? null,
-        restingHeartRate: recovery.score?.resting_heart_rate ?? null,
-        spo2Percent: recovery.score?.spo2_percentage?.toString() ?? null,
-        skinTempCelsius: recovery.score?.skin_temp_celsius?.toString() ?? null,
-        scoredAt: new Date(recovery.updated_at),
-        raw,
-        updatedAt: new Date(),
-      },
+      set: updateSetFor(row, RECOVERY_IMMUTABLE),
     });
 }
 
 // ─── Sleep ───────────────────────────────────────────────────────────────────
 
+/** Whether a sleep was a nap, and when it began, are fixed at creation. */
+const SLEEP_IMMUTABLE = ["id", "userId", "startAt", "isNap"] as const;
+
 export async function upsertSleep(
   userId: string,
   sleep: WhoopSleep,
 ): Promise<void> {
-  const s = sleep.score;
-  const raw = sleep as unknown as Record<string, unknown>;
+  const row = toSleepRow(userId, sleep);
+
   await db
     .insert(whoopSleep)
-    .values({
-      id: String(sleep.id),
-      userId,
-      startAt: sleep.start ? new Date(sleep.start) : null,
-      endAt: sleep.end ? new Date(sleep.end) : null,
-      isNap: sleep.nap,
-      totalInBedSeconds: s
-        ? Math.round(s.stage_summary.total_in_bed_time_milli / 1000)
-        : null,
-      totalAwakeSeconds: s
-        ? Math.round(s.stage_summary.total_awake_time_milli / 1000)
-        : null,
-      totalLightSeconds: s
-        ? Math.round(s.stage_summary.total_light_sleep_time_milli / 1000)
-        : null,
-      totalSwsSeconds: s
-        ? Math.round(s.stage_summary.total_slow_wave_sleep_time_milli / 1000)
-        : null,
-      totalRemSeconds: s
-        ? Math.round(s.stage_summary.total_rem_sleep_time_milli / 1000)
-        : null,
-      sleepPerformancePercent: s?.sleep_performance_percentage ?? null,
-      sleepEfficiencyPercent:
-        s?.sleep_efficiency_percentage?.toString() ?? null,
-      respiratoryRate: s?.respiratory_rate?.toString() ?? null,
-      raw,
-    })
+    .values(row)
     .onConflictDoUpdate({
       target: whoopSleep.id,
-      set: {
-        endAt: sleep.end ? new Date(sleep.end) : null,
-        totalInBedSeconds: s
-          ? Math.round(s.stage_summary.total_in_bed_time_milli / 1000)
-          : null,
-        totalAwakeSeconds: s
-          ? Math.round(s.stage_summary.total_awake_time_milli / 1000)
-          : null,
-        totalLightSeconds: s
-          ? Math.round(s.stage_summary.total_light_sleep_time_milli / 1000)
-          : null,
-        totalSwsSeconds: s
-          ? Math.round(s.stage_summary.total_slow_wave_sleep_time_milli / 1000)
-          : null,
-        totalRemSeconds: s
-          ? Math.round(s.stage_summary.total_rem_sleep_time_milli / 1000)
-          : null,
-        sleepPerformancePercent: s?.sleep_performance_percentage ?? null,
-        sleepEfficiencyPercent:
-          s?.sleep_efficiency_percentage?.toString() ?? null,
-        respiratoryRate: s?.respiratory_rate?.toString() ?? null,
-        raw,
-        updatedAt: new Date(),
-      },
+      set: updateSetFor(row, SLEEP_IMMUTABLE),
     });
 }
 
 // ─── Workouts ────────────────────────────────────────────────────────────────
 
+/**
+ * `sportName` is deliberately NOT immutable: SPORT_ID_MAP has been wrong before
+ * (Basketball was mapped to 35 instead of 17), and re-syncing has to be able to
+ * relabel rows written under the old map.
+ */
+const WORKOUT_IMMUTABLE = ["id", "userId", "startAt"] as const;
+
 export async function upsertWorkout(
   userId: string,
   workout: WhoopWorkout,
 ): Promise<void> {
-  const w = workout.score;
-  const raw = workout as unknown as Record<string, unknown>;
-  const zones = w?.zone_duration
-    ? {
-        z0: Math.round((w.zone_duration.zone_zero_milli ?? 0) / 1000),
-        z1: Math.round(w.zone_duration.zone_one_milli / 1000),
-        z2: Math.round(w.zone_duration.zone_two_milli / 1000),
-        z3: Math.round(w.zone_duration.zone_three_milli / 1000),
-        z4: Math.round(w.zone_duration.zone_four_milli / 1000),
-        z5: Math.round(w.zone_duration.zone_five_milli / 1000),
-      }
-    : null;
+  const row = toWorkoutRow(userId, workout);
 
   await db
     .insert(whoopWorkouts)
-    .values({
-      id: String(workout.id),
-      userId,
-      sportName: sportName(workout.sport_id),
-      startAt: workout.start ? new Date(workout.start) : null,
-      endAt: workout.end ? new Date(workout.end) : null,
-      strain: w?.strain?.toString() ?? null,
-      averageHeartRate: w?.average_heart_rate ?? null,
-      maxHeartRate: w?.max_heart_rate ?? null,
-      kilojoules: w?.kilojoule?.toString() ?? null,
-      distanceMeters: w?.distance_meter?.toString() ?? null,
-      altitudeGainMeters: w?.altitude_gain_meter?.toString() ?? null,
-      hrZoneDurationsSeconds: zones,
-      raw,
-    })
+    .values(row)
     .onConflictDoUpdate({
       target: whoopWorkouts.id,
-      set: {
-        sportName: sportName(workout.sport_id),
-        endAt: workout.end ? new Date(workout.end) : null,
-        strain: w?.strain?.toString() ?? null,
-        averageHeartRate: w?.average_heart_rate ?? null,
-        maxHeartRate: w?.max_heart_rate ?? null,
-        kilojoules: w?.kilojoule?.toString() ?? null,
-        distanceMeters: w?.distance_meter?.toString() ?? null,
-        altitudeGainMeters: w?.altitude_gain_meter?.toString() ?? null,
-        hrZoneDurationsSeconds: zones,
-        raw,
-        updatedAt: new Date(),
-      },
+      set: updateSetFor(row, WORKOUT_IMMUTABLE),
     });
 }
 
