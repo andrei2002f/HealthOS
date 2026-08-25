@@ -37,6 +37,9 @@ export default defineConfig({
         test: {
           name: "unit",
           environment: "node",
+          // Instrumented code logs on every call; a test run should show test
+          // results, not application output. logger.test.ts overrides this.
+          env: { LOG_LEVEL: "silent" },
           include: ["lib/**/*.test.ts"],
           exclude: ["lib/**/*.integration.test.ts"],
         },
@@ -46,6 +49,7 @@ export default defineConfig({
         test: {
           name: "integration",
           environment: "node",
+          env: { LOG_LEVEL: "silent" },
           include: ["lib/**/*.integration.test.ts"],
           // Applies the auth shim and the migration chain once for the suite.
           globalSetup: ["lib/db/__test__/global-setup.ts"],

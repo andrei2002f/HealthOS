@@ -3,6 +3,8 @@ import "server-only";
 import { decrypt, encrypt } from "@/lib/crypto";
 import { getWhoopCredentials, updateWhoopTokens } from "@/lib/db/queries/whoop";
 import { env } from "@/lib/env";
+import { log } from "@/lib/observability/logger";
+import { rateLimited, tokenRefreshes } from "@/lib/observability/metrics";
 import { refreshAccessToken } from "@/lib/whoop/oauth";
 import type { WhoopPagedResponse } from "./types";
 
@@ -26,7 +28,29 @@ export class WhoopClient {
     const expiresIn = creds.expiresAt.getTime() - Date.now();
     if (expiresIn < TOKEN_REFRESH_THRESHOLD_MS) {
       const refreshToken = decrypt(creds.refreshTokenEncrypted);
-      const tokens = await refreshAccessToken(refreshToken);
+
+      let tokens;
+      try {
+        tokens = await refreshAccessToken(refreshToken);
+      } catch (err) {
+        // A failed refresh is the difference between "one sync failed" and
+        // "the integration is dead until someone reconnects it by hand", so
+        // it is counted separately from sync failures.
+        tokenRefreshes.inc({ outcome: "failure" });
+        log.error("whoop.token.refresh_failed", {
+          userId: this.userId,
+          expiresInMs: expiresIn,
+          error: err,
+        });
+        throw err;
+      }
+
+      tokenRefreshes.inc({ outcome: "success" });
+      log.info("whoop.token.refreshed", {
+        userId: this.userId,
+        expiresInSeconds: tokens.expires_in,
+      });
+
       await updateWhoopTokens(this.userId, {
         accessTokenEncrypted: encrypt(tokens.access_token),
         refreshTokenEncrypted: encrypt(tokens.refresh_token),
@@ -49,12 +73,15 @@ export class WhoopClient {
       if (res.ok) return res.json() as Promise<T>;
 
       if (res.status === 429) {
+        rateLimited.inc();
         if (attempt === MAX_RETRIES - 1) {
+          log.warn("whoop.rate_limit.exhausted", { path, attempts: MAX_RETRIES });
           throw new Error(
             `Whoop rate limit exceeded after ${MAX_RETRIES} retries`,
           );
         }
         const delay = RETRY_BASE_DELAY_MS * 2 ** attempt;
+        log.warn("whoop.rate_limit.backoff", { path, attempt, delayMs: delay });
         await new Promise((r) => setTimeout(r, delay));
         continue;
       }

@@ -3,6 +3,13 @@ import "server-only";
 import { startOfWeek, subWeeks, formatISO } from "date-fns";
 import { toZonedTime } from "date-fns-tz";
 
+import { log } from "@/lib/observability/logger";
+import {
+  anthropicDuration,
+  anthropicFailures,
+  timed,
+} from "@/lib/observability/metrics";
+
 import { getAnthropic, getModel } from "./client";
 import { WEEKLY_REVIEW_SYSTEM_PROMPT } from "./prompts";
 import { buildUserContext } from "./context";
@@ -36,12 +43,30 @@ Here is the user's data for context:
 
 ${contextBlock}`;
 
-  const response = await getAnthropic().messages.create({
-    model: getModel(),
-    max_tokens: 1500,
-    system: WEEKLY_REVIEW_SYSTEM_PROMPT,
-    messages: [{ role: "user", content: userPrompt }],
-  });
+  let response;
+  try {
+    response = await timed(
+      anthropicDuration,
+      { operation: "weekly_review" },
+      () =>
+        getAnthropic().messages.create({
+          model: getModel(),
+          max_tokens: 1500,
+          system: WEEKLY_REVIEW_SYSTEM_PROMPT,
+          messages: [{ role: "user", content: userPrompt }],
+        }),
+    );
+  } catch (err) {
+    // This runs from a weekly cron with nobody watching, so a failure that is
+    // not recorded is a failure nobody hears about until a review is missing.
+    anthropicFailures.inc({ operation: "weekly_review" });
+    log.error("anthropic.weekly_review.failed", {
+      userId,
+      weekStart: weekStartStr,
+      error: err,
+    });
+    throw err;
+  }
 
   const block = response.content[0];
   if (block.type !== "text") {

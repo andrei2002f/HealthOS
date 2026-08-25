@@ -1,6 +1,6 @@
 import "server-only";
 
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import {
@@ -208,6 +208,25 @@ export async function getRecentSyncLogs(
     orderBy: [desc(syncLogs.startedAt)],
     limit,
   });
+}
+
+/**
+ * When the last Whoop sync succeeded, or null if none ever has.
+ *
+ * Used to seed the `last successful sync` gauge at startup. That value is a
+ * fact about the system, not about this process: a pod that has just started
+ * has synced nothing, but the system may well have synced an hour ago, and a
+ * gauge left at zero reads as "never" and fires a false alert.
+ */
+export async function getLastSuccessfulSyncAt(): Promise<Date | null> {
+  const [row] = await db
+    .select({ startedAt: syncLogs.startedAt })
+    .from(syncLogs)
+    .where(and(eq(syncLogs.job, "whoop_sync"), eq(syncLogs.status, "success")))
+    .orderBy(desc(syncLogs.startedAt))
+    .limit(1);
+
+  return row?.startedAt ?? null;
 }
 
 // ─── Cron helper ─────────────────────────────────────────────────────────────

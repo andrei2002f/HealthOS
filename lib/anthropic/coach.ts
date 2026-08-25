@@ -1,5 +1,11 @@
 import "server-only";
 
+import { log } from "@/lib/observability/logger";
+import {
+  anthropicDuration,
+  anthropicFailures,
+} from "@/lib/observability/metrics";
+
 import { getAnthropic, getModel } from "./client";
 import { COACH_SYSTEM_PROMPT } from "./prompts";
 import { buildUserContext } from "./context";
@@ -33,14 +39,32 @@ ${contextBlock}`;
     { role: "user" as const, content: userMessage },
   ];
 
-  // Use create({stream: true}) for a raw RawMessageStreamEvent iterator —
-  // simpler than the MessageStream wrapper and works reliably with for-await.
-  const stream = await getAnthropic().messages.create({
-    model: getModel(),
-    max_tokens: 1024,
-    system: systemPrompt,
-    messages,
-    stream: true,
+  // Measures time to the opening of the stream, not to the last token: that
+  // is the number the user experiences as "did it hang?", and the only part
+  // whose latency we can act on.
+  const stopTimer = anthropicDuration.startTimer({ operation: "coach" });
+
+  let stream;
+  try {
+    // Use create({stream: true}) for a raw RawMessageStreamEvent iterator —
+    // simpler than the MessageStream wrapper and works reliably with for-await.
+    stream = await getAnthropic().messages.create({
+      model: getModel(),
+      max_tokens: 1024,
+      system: systemPrompt,
+      messages,
+      stream: true,
+    });
+  } catch (err) {
+    anthropicFailures.inc({ operation: "coach" });
+    log.error("anthropic.coach.request_failed", { userId, error: err });
+    throw err;
+  }
+
+  log.info("anthropic.coach.stream_opened", {
+    userId,
+    ttfbSeconds: stopTimer(),
+    historyMessages: cappedHistory.length,
   });
 
   const encoder = new TextEncoder();
@@ -61,7 +85,8 @@ ${contextBlock}`;
         controller.close();
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        console.error("[coach] streaming error:", msg);
+        anthropicFailures.inc({ operation: "coach" });
+        log.error("anthropic.coach.stream_failed", { userId, error: err });
         controller.enqueue(
           encoder.encode(`data: ${JSON.stringify({ error: msg })}\n\n`),
         );

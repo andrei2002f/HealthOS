@@ -34,6 +34,12 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: healthos
+      # Prometheus discovers targets by annotation rather than by a hardcoded
+      # list, so a new workload joins by adding these three lines.
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9091"
+        prometheus.io/path: /metrics
     spec:
       # Prefer to place the two replicas on different nodes. `preferred` rather
       # than `required`: on a one-node cluster a hard rule would leave the
@@ -76,6 +82,12 @@ spec:
           ports:
             - name: http
               containerPort: 3000
+              protocol: TCP
+            # Declared for documentation and for Prometheus to find; the
+            # Service deliberately does not publish it, which is what keeps
+            # metrics unreachable from the Ingress.
+            - name: metrics
+              containerPort: 9091
               protocol: TCP
 
           envFrom:

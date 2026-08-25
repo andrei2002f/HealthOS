@@ -1220,6 +1220,217 @@ matters, since by the time anyone looks, the failed container has been replaced.
 
 ---
 
+## ADR-0023 — Structured logging, written by hand
+
+**Status:** accepted · Phase 6
+
+### Decision
+
+`lib/observability/logger.ts`: one JSON object per line, levelled, with a
+`child()` for binding job or request context. No dependency.
+
+### Rationale
+
+JSON per line is what every collector can parse without being configured —
+the Vercel dashboard, `kubectl logs`, Loki, CloudWatch. What was there before,
+`console.log("[whoop/sync] user=… cycles=…")`, is greppable only by someone who
+already knows the prefix, and carries no level, so nothing can route errors
+differently from progress.
+
+Hand-written rather than pino because a levelled JSON logger has no genuinely
+hard part — unlike a histogram, which is why the metrics decision went the
+other way in ADR-0024. Writing it also keeps redaction visible in the source
+rather than in a configuration object.
+
+### Redaction is the part worth testing
+
+CLAUDE.md forbids logging Whoop tokens, API keys, or the user's email. That
+rule lived in a developer's memory, one `log.info("creds", creds)` away from
+being broken silently. Field names matching
+`token|secret|password|api_key|encryption|authorization|cookie|credential|email`
+are replaced with `[redacted]`, recursively — so a credential nested inside an
+object logged wholesale is still caught, which is the realistic failure. Twelve
+tests cover it; the rule now fails a build instead of a review.
+
+Also handled: `Error` objects become `{name, message, stack}` with the stack
+trimmed to five frames, `Date` becomes ISO, and depth is capped at six so a
+cyclic object cannot hang a log call.
+
+### Level `silent`
+
+Set by the Vitest config for both suites. Instrumented code logs on every call,
+and a test run should print test results, not application output.
+
+---
+
+## ADR-0024 — Domain metrics, not request metrics
+
+**Status:** accepted · Phase 6
+
+### Decision
+
+`prom-client`, one dependency, exposing metrics about background work rather
+than HTTP traffic.
+
+### Why not RED dashboards
+
+Request rate, errors and duration on an application with one user is
+decoration — nobody watches it and it says nothing. Every failure this project
+has actually had was in background work:
+
+| What happened | What would have caught it |
+| --- | --- |
+| Sync duration grew 18s → 49s → 77s until the 60s serverless limit killed it mid-run, leaving rows stuck at `status="running"` | A duration histogram. The growth was in the data for weeks. |
+| A sub-daily cron expression was rejected by Vercel, so **every deploy failed for five months** | Time since last successful sync — the only signal that rises when nothing happens. |
+| Basketball mapped to sport id 35 instead of 17, mislabelling data silently | Records synced per resource. |
+| A failed token refresh leaves the integration dead until reconnected by hand | A refresh counter split by outcome. |
+
+So the metrics are: `whoop_sync_duration_seconds` (histogram),
+`whoop_sync_records_total{resource}`, `whoop_sync_failures_total`,
+`whoop_sync_last_success_timestamp_seconds` (gauge),
+`whoop_token_refresh_total{outcome}`, `whoop_rate_limited_total`,
+`anthropic_request_duration_seconds{operation}`,
+`anthropic_failures_total{operation}`.
+
+### Buckets chosen from the incident, not from a default ladder
+
+`[1, 5, 10, 20, 30, 45, 60, 90, 120]`. The failure happened at 60s and the run
+before it took 49s, so the resolution that matters is between 30 and 90, and an
+alert at 45 fires with headroom left.
+
+### Why a library here but not for logging
+
+Histograms are the part that is easy to get subtly wrong — cumulative buckets,
+the `_bucket`/`_sum`/`_count` suffixes, the `le="+Inf"` series. A wrong
+histogram is worse than a dependency. prom-client also brings default runtime
+metrics — heap size, event loop lag, GC pauses — which are exactly what is
+wanted when diagnosing an OOMKill, and which hand-rolling would mean writing
+twice.
+
+### Honest limit
+
+These are in-process counters. Under Kubernetes that is correct: Prometheus
+scrapes each pod separately and `rate()` handles resets. **On Vercel it is close
+to meaningless** — there is no persistent process, so every invocation starts
+from zero. This instrumentation is real for the containerised path and
+decorative for the one currently serving production. Recorded rather than
+glossed over.
+
+---
+
+## ADR-0025 — Metrics on a separate port, not a denied path
+
+**Status:** accepted · Phase 6 · supersedes a first attempt
+
+### The first attempt, and why it silently did nothing
+
+Metrics were served at `/api/metrics` and the Ingress was given an
+`nginx.ingress.kubernetes.io/server-snippet` returning 404 for that path.
+
+That does not work. ingress-nginx has shipped with
+`allow-snippet-annotations: false` since v1.9 — confirmed on the running
+controller — because a snippet lets anyone who can create an Ingress inject
+arbitrary nginx configuration, which is a privilege escalation on a shared
+cluster. The annotation is ignored, and the endpoint would have stayed open
+while the manifest claimed otherwise.
+
+Re-enabling the flag would have meant weakening a cluster-wide security default
+to solve a local problem.
+
+### Decision
+
+A second HTTP listener on port **9091**, started from `instrumentation.ts`,
+serving `/metrics` from the same registry. The container declares the port; the
+**Service does not publish it**.
+
+### Why this is stronger
+
+Not "denied at the edge" but *not routable from the edge at all*. Nothing that
+arrives through the Ingress can reach a port the Service does not expose.
+Prometheus scrapes the pod IP directly, which never passes through the Ingress.
+
+It also keeps the property the original decision was about: the application
+authenticates nobody. Exposure is decided by what the Service publishes, which
+is where that decision belongs.
+
+This is the standard pattern — most Go services and every Kubernetes component
+expose metrics on their own port for exactly this reason.
+
+### Verified
+
+- `up` on both pods at `http://<pod-ip>:9091/metrics`, 39 metric families.
+- `http://localhost/api/metrics` → 404, `http://localhost/metrics` → 307 to the
+  login page. Neither exposes anything.
+- Any path other than `/metrics` on 9091 → 404.
+
+### Details worth keeping
+
+`server.unref()` so the metrics listener cannot hold the process open after the
+main server exits, an `error` handler so a port conflict logs instead of
+crashing the app, and a module-level guard so hot reload cannot `listen` twice
+and throw `EADDRINUSE`.
+
+---
+
+## ADR-0026 — Two alert rules that were wrong, and how that was found
+
+**Status:** accepted · Phase 6
+
+Both rules looked correct in review. Both were wrong, and deploying them and
+watching their state is what showed it.
+
+### `WhoopSyncNotRunning` fired on every restart
+
+```promql
+time() - healthos_whoop_sync_last_success_timestamp_seconds > 172800
+```
+
+A gauge that has never been set reports **0**, so in a freshly started pod this
+evaluates as "no sync since 1970" and the rule went `pending` within seconds of
+deploying.
+
+Two fixes, both needed:
+
+1. **Seed the gauge from the database at boot.** When the last sync succeeded is
+   a fact about the *system*, not about this process — a pod that started a
+   minute ago has synced nothing, but the system may have synced this morning.
+   `getLastSuccessfulSyncAt()` reads it from `sync_logs`. Best-effort and
+   non-blocking: metrics must never be the reason a boot fails.
+2. **Guard the expression with `> 0`**, so a pod whose seeding failed because
+   the database was not ready cannot fire a false critical alert half an hour
+   later.
+
+Verified after the fix: `metrics.sync_gauge_seeded` at boot with the real
+timestamp, and the rule `inactive`.
+
+### `HighHeapUsage` fired against an idle pod
+
+```promql
+healthos_nodejs_heap_size_used_bytes / healthos_nodejs_heap_size_total_bytes > 0.9
+```
+
+V8 grows the total heap on demand, so early in a process's life the ratio sits
+near 1 while only 40 MB is actually in use. The ratio is not an OOM predictor.
+
+Replaced with an absolute threshold — 300Mi — against the 384Mi ceiling set by
+`--max-old-space-size`, which is itself below the 512Mi container limit. Those
+are numbers this repository chose, so the alert is anchored to something known
+rather than to a self-referential ratio.
+
+### The general point
+
+An alert rule is code, and an unfired alert is untested code. Both of these
+would have shipped and then either been ignored as noise or silenced entirely —
+which is how alerting dies. Watching the rule state immediately after deploying
+took two minutes and caught both.
+
+What is still missing: nothing *receives* these alerts. There is no
+Alertmanager, no routing, no notification. Prometheus evaluates the rules and
+displays their state, and that is where it stops. Naming that is more useful
+than pretending the loop is closed.
+
+---
+
 # Honest assessment
 
 Not an ADR. A candid read of what this infrastructure work is worth, written
@@ -1354,12 +1565,15 @@ anon/authenticated key path that this app does not use for data access. It is
 the single largest gap between what the schema appears to guarantee and what
 it actually guarantees.
 
-**No observability whatsoever.** No metrics, no structured logging, no tracing,
-no dashboards, no alerts. What exists is `console.log` with a bracketed prefix.
-An infrastructure track that stops before observability is incomplete, and this
-is the most obvious next thing to build — the health endpoints are a natural
-place to start, and `sync_logs` already holds the shape of an operational
-record.
+**Observability stops at the alert.** Addressed in ADR-0023..0026 — structured
+JSON logging with enforced redaction, domain metrics driven by the incidents
+that actually happened, Prometheus and Grafana provisioned from files, and four
+alert rules. What is still absent: **nothing receives those alerts.** There is
+no Alertmanager, no routing, no notification, so a rule that fires changes a
+colour on a page nobody is looking at. There is also no tracing, which is a
+defensible omission for an application with a handful of routes and no
+distributed calls to correlate — a span would tell you what a log line already
+does.
 
 **No PodDisruptionBudget.** With two replicas and `maxUnavailable: 0` on the
 Deployment, a voluntary disruption — a node drain during a cluster upgrade —

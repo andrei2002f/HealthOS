@@ -15,4 +15,10 @@ export async function register() {
 
   const { loadEnv } = await import("@/lib/env");
   loadEnv();
+
+  // Prometheus metrics listen on their own port, which the Service does not
+  // publish — so they are unreachable from the Ingress without the
+  // application having to authenticate anyone. See ADR-0025.
+  const { startMetricsServer } = await import("@/lib/observability/server");
+  startMetricsServer();
 }

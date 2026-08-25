@@ -4,6 +4,12 @@
 # runs on the control-plane node, whose ports 80 and 443 kind publishes to the
 # host (see kind-cluster.yaml), and routes by host and path to the Service.
 #
+# Metrics are not routable through here at all: they are served on port 9091,
+# which the Service does not publish, so there is no path to deny. An earlier
+# attempt used an nginx server-snippet to return 404 for /api/metrics — that
+# silently does nothing, because ingress-nginx disables snippet annotations by
+# default. See ADR-0025.
+#
 # No TLS here, deliberately. A self-signed certificate for a made-up hostname
 # on a laptop demonstrates nothing that reading the manifest would not. What a
 # public deployment would add, and why it is absent, is in ADR-0015.

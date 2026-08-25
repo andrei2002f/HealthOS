@@ -11,6 +11,13 @@ import {
   upsertWorkout,
 } from "@/lib/db/queries/whoop";
 import { autoCreateBasketballSessions } from "@/lib/db/queries/basketball";
+import { log } from "@/lib/observability/logger";
+import {
+  syncDuration,
+  syncFailures,
+  syncLastSuccess,
+  syncRecords,
+} from "@/lib/observability/metrics";
 
 import { WhoopClient } from "./client";
 import type { WhoopCycle, WhoopRecovery, WhoopSleep, WhoopWorkout } from "./types";
@@ -29,12 +36,16 @@ const SYNC_OVERLAP_MS = 3 * 24 * 60 * 60 * 1000;
 
 export async function syncWhoop(userId: string): Promise<SyncResult> {
   const startedAt = new Date();
+  const stopTimer = syncDuration.startTimer();
   const { id: logId } = await insertSyncLog({
     userId,
     job: "whoop_sync",
     status: "running",
     startedAt,
   });
+
+  const logger = log.child({ job: "whoop_sync", userId, syncLogId: logId });
+  logger.info("whoop.sync.started");
 
   // Incremental: only fetch records since the last successful sync (minus an
   // overlap window). A full-history pull grows unbounded and eventually
@@ -97,14 +108,25 @@ export async function syncWhoop(userId: string): Promise<SyncResult> {
     });
     await markWhoopSynced(userId);
 
-    console.log(
-      `[whoop/sync] user=${userId} cycles=${result.cycles} recovery=${result.recovery} sleep=${result.sleep} workouts=${result.workouts}`,
-    );
+    for (const [resource, count] of Object.entries(result)) {
+      syncRecords.inc({ resource }, count);
+    }
+    syncLastSuccess.set(Date.now() / 1000);
+
+    const durationSeconds = stopTimer();
+    logger.info("whoop.sync.finished", {
+      durationSeconds,
+      records: total,
+      ...result,
+    });
 
     return result;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`[whoop/sync] user=${userId} error:`, message);
+
+    syncFailures.inc();
+    const durationSeconds = stopTimer();
+    logger.error("whoop.sync.failed", { durationSeconds, error: err });
 
     await updateSyncLog(logId, {
       status: "error",

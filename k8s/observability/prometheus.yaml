@@ -1,0 +1,274 @@
+# Prometheus, hand-written. No operator, no Helm chart — every line here is
+# meant to be readable, which is the whole point of the exercise.
+#
+# Scrapes the application pods directly on their pod IPs, on port 9091 — which
+# the Service does not publish. That is why the metrics endpoint needs no
+# authentication in code: nothing reachable through the Ingress can route to
+# it at all. See ADR-0025.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+  labels:
+    app.kubernetes.io/name: observability
+---
+# Prometheus discovers pods through the Kubernetes API, so it needs read access
+# to them. Read-only, and limited to the three object kinds it actually uses.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: observability
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: observability
+data:
+  prometheus.yml: |
+    global:
+      # The interesting signal here is a Whoop sync that runs once a day, so
+      # sub-second scrape resolution would be storage spent on nothing.
+      scrape_interval: 15s
+      evaluation_interval: 15s
+
+    rule_files:
+      - /etc/prometheus/rules/*.yml
+
+    scrape_configs:
+      # Any pod carrying prometheus.io/scrape: "true" is scraped, so adding a
+      # workload later needs an annotation rather than an edit here.
+      - job_name: kubernetes-pods
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          - source_labels:
+              - __address__
+              - __meta_kubernetes_pod_annotation_prometheus_io_port
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          # Carry pod identity onto every series, so a metric can be traced
+          # back to the replica that produced it.
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+
+      - job_name: prometheus
+        static_configs:
+          - targets: ["localhost:9090"]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-rules
+  namespace: observability
+data:
+  healthos.yml: |
+    groups:
+      - name: whoop-sync
+        rules:
+          # ── The rule this whole exercise is built around ──────────────────
+          #
+          # A real incident: sync duration grew 18s → 49s → 77s as the history
+          # accumulated, until the 60s serverless limit killed the function
+          # mid-run. The process was hard-killed, so the `catch` never ran and
+          # rows were left at status="running" forever, with no error recorded
+          # anywhere.
+          #
+          # The growth was visible in the data for weeks. This fires while
+          # there is still headroom to act, rather than after the failure.
+          - alert: WhoopSyncApproachingTimeout
+            expr: |
+              histogram_quantile(
+                0.9,
+                sum by (le) (rate(healthos_whoop_sync_duration_seconds_bucket[1h]))
+              ) > 45
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Whoop sync p90 above 45s"
+              description: >-
+                Sync duration is approaching the 60s serverless limit. Beyond it
+                the function is killed mid-run, the catch block never executes,
+                and the sync_logs row is left stuck at "running".
+
+          # ── The failure that produces no failures ─────────────────────────
+          #
+          # A cron that stops firing increments no error counter. Everything
+          # looks healthy precisely because nothing happens. Time since the
+          # last success is the only signal that rises on silence — which is
+          # what a sub-daily cron expression, rejected by Vercel's Hobby plan,
+          # did to every deploy for five months.
+          - alert: WhoopSyncNotRunning
+            # The `> 0` guard is not decoration. A pod that has never synced
+            # reports the gauge as 0, and `time() - 0` reads as "no sync since
+            # 1970" — so without it this fires falsely after every restart.
+            # The gauge is also seeded from sync_logs at boot, because when the
+            # last sync happened is a fact about the system, not this process.
+            # Both were found by deploying it and watching the rule go pending.
+            expr: |
+              healthos_whoop_sync_last_success_timestamp_seconds > 0
+                and
+              time() - healthos_whoop_sync_last_success_timestamp_seconds > 172800
+            for: 30m
+            labels:
+              severity: critical
+            annotations:
+              summary: "No successful Whoop sync in 48 hours"
+              description: >-
+                The sync runs daily. Two missed days means the cron is not
+                firing, the deploy is failing, or the Whoop token expired —
+                none of which raise an error on their own.
+
+          - alert: WhoopTokenRefreshFailing
+            expr: increase(healthos_whoop_token_refresh_total{outcome="failure"}[1h]) > 0
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Whoop token refresh is failing"
+              description: >-
+                Refresh tokens rotate on every use. Once refresh fails the
+                integration stays dead until someone reconnects the account by
+                hand, so this does not recover on its own.
+
+      - name: runtime
+        rules:
+          - alert: HighHeapUsage
+            # An absolute threshold, not used/total. V8 grows the total heap on
+            # demand, so early in a process's life the ratio sits near 1 while
+            # only 40 MB is in use — the first version of this rule went
+            # pending within a minute of deploying, against an idle pod.
+            #
+            # 300Mi of the 384Mi ceiling set by --max-old-space-size, which is
+            # itself below the 512Mi container limit. Crossing this means GC is
+            # working hard and an OOMKill (exit 137) is the next step.
+            expr: healthos_nodejs_heap_size_used_bytes > 314572800
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Node heap above 300Mi for 10 minutes"
+              description: >-
+                Heap ceiling is 384Mi and the container limit is 512Mi.
+                Sustained pressure here precedes an OOMKill (exit 137).
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: prometheus
+    spec:
+      serviceAccountName: prometheus
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v3.1.0
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            # Local cluster, ephemeral storage — keeping a month of data would
+            # be storing what is thrown away on the next `kind delete`.
+            - --storage.tsdb.retention.time=6h
+            - --web.enable-lifecycle
+          ports:
+            - name: http
+              containerPort: 9090
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus/prometheus.yml
+              subPath: prometheus.yml
+            - name: rules
+              mountPath: /etc/prometheus/rules
+            - name: data
+              mountPath: /prometheus
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: http
+            periodSeconds: 15
+          resources:
+            requests:
+              memory: 256Mi
+              cpu: 100m
+            limits:
+              memory: 1Gi
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+        - name: rules
+          configMap:
+            name: prometheus-rules
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: prometheus
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: prometheus
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http
