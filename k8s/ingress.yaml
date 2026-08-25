@@ -1,0 +1,38 @@
+# HTTP entry point into the cluster.
+#
+# The Service is ClusterIP, so it is unreachable from outside. ingress-nginx
+# runs on the control-plane node, whose ports 80 and 443 kind publishes to the
+# host (see kind-cluster.yaml), and routes by host and path to the Service.
+#
+# No TLS here, deliberately. A self-signed certificate for a made-up hostname
+# on a laptop demonstrates nothing that reading the manifest would not. What a
+# public deployment would add, and why it is absent, is in ADR-0015.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: healthos
+  namespace: healthos
+  labels:
+    app.kubernetes.io/name: healthos
+  annotations:
+    # Next streams SSE from /api/coach. Proxy buffering would hold the response
+    # until the buffer filled or the request ended, so the coach's reply would
+    # arrive in one lump at the end instead of token by token.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    # The coach's streamed reply can outlive nginx's default 60s read timeout.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+spec:
+  ingressClassName: nginx
+  rules:
+    # kind publishes the controller on the host, so this resolves at
+    # http://localhost with no /etc/hosts entry.
+    - host: localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: healthos
+                port:
+                  name: http

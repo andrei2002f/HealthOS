@@ -1,0 +1,32 @@
+# Stable virtual IP and DNS name in front of the pods.
+#
+# Pods are cattle: their IPs change on every restart and rollout. The Service
+# gives a name that does not — `healthos.healthos.svc.cluster.local` — and
+# keeps its endpoint list in sync with whichever pods currently match the
+# selector AND pass their readiness probe.
+#
+# That second condition is the important one. A pod failing readiness is
+# removed from these endpoints, so no traffic reaches it, without being
+# restarted. It is also what makes the rolling update safe: a new pod joins the
+# endpoint list only once it says it can serve.
+#
+# ClusterIP, not NodePort or LoadBalancer: nothing outside the cluster should
+# reach pods directly. The Ingress is the only way in.
+apiVersion: v1
+kind: Service
+metadata:
+  name: healthos
+  namespace: healthos
+  labels:
+    app.kubernetes.io/name: healthos
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: healthos
+  ports:
+    - name: http
+      port: 80
+      # Named, not numeric: the Deployment can change its container port
+      # without this file needing to know.
+      targetPort: http
+      protocol: TCP

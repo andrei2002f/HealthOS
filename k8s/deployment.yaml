@@ -1,0 +1,207 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: healthos
+  namespace: healthos
+  labels:
+    app.kubernetes.io/name: healthos
+spec:
+  replicas: 2
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: healthos
+
+  # ---------------------------------------------------------------------------
+  # Rolling update
+  # ---------------------------------------------------------------------------
+  # maxUnavailable: 0 — never drop below the desired replica count. Combined
+  # with maxSurge: 1 this makes the rollout strictly additive: a new pod is
+  # created, must pass its readiness probe, and only then is an old pod
+  # terminated. That readiness gate is the entire mechanism behind zero-downtime
+  # deploys; with maxUnavailable: 1 the old pod could be killed first and the
+  # remaining replica would absorb all traffic while the new one boots.
+  #
+  # The cost is capacity: the cluster must have room for replicas + 1 during a
+  # rollout, and a rollout cannot start if it does not.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: healthos
+    spec:
+      # Prefer to place the two replicas on different nodes. `preferred` rather
+      # than `required`: on a one-node cluster a hard rule would leave the
+      # second pod Pending forever, which is a worse failure than co-location.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: healthos
+
+      securityContext:
+        # Refuses to start the pod if the image's user resolves to uid 0. This
+        # is why the Dockerfile declares a numeric USER — Kubernetes cannot
+        # resolve a username to check it. See ADR-0002.
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+
+      # Must exceed the preStop sleep plus the process's own shutdown time
+      # (5 s + ~0.3 s here). Next handles SIGTERM and exits in well under a
+      # second, so a larger value would just be dead time on every rollout.
+      terminationGracePeriodSeconds: 15
+
+      containers:
+        - name: app
+          # Tagged by commit SHA, never :latest — see ADR-0016. Replaced at
+          # deploy time:
+          #   kubectl -n healthos set image deploy/healthos app=healthos-app:$SHA
+          image: healthos-app:ff1119b
+          # The image is side-loaded into kind with `kind load docker-image`,
+          # so there is no registry to pull from.
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+
+          envFrom:
+            - configMapRef:
+                name: healthos-config
+            - secretRef:
+                name: healthos-secrets
+
+          # -------------------------------------------------------------------
+          # Resources
+          # -------------------------------------------------------------------
+          # Memory was measured against the real image: 63 MiB idle, 93 MiB
+          # under sustained load, 122 MiB peak after a burst and stable there
+          # (Node retains heap rather than returning it to the OS).
+          #
+          # requests.memory 160Mi — above the observed steady state, so the
+          # scheduler reserves what the pod actually holds rather than what it
+          # holds on a good day. Under-requesting gets pods scheduled onto nodes
+          # that cannot really host them.
+          #
+          # limits.memory 512Mi — roughly 4x the observed peak. Exceeding it
+          # means the kernel OOM-kills the container (exit 137) and the kubelet
+          # restarts it. Too low and legitimate traffic kills healthy pods; too
+          # high and a genuine leak grows until it destabilises the whole node
+          # instead of failing one pod loudly. 4x is headroom for real bursts
+          # while still catching a leak.
+          #
+          # No CPU limit, only a request. `limits.cpu` is enforced by CFS quota:
+          # on hitting the quota the kernel stops the process until the next
+          # 100 ms period, which shows up directly as latency spikes on a
+          # bursty SSR workload. The request still guarantees a scheduling floor
+          # and a relative share under contention. See ADR-0013.
+          resources:
+            requests:
+              memory: 160Mi
+              cpu: 100m
+            limits:
+              memory: 512Mi
+
+          # Node sizes its old-space heap from the cgroup limit, but the default
+          # ceiling can sit close enough to it that the kernel kills the process
+          # before V8 ever runs a serious GC. Capping the heap below the
+          # container limit turns "OOMKilled with no explanation" into GC
+          # pressure and, if it truly runs out, a JS heap error with a stack.
+          env:
+            - name: NODE_OPTIONS
+              value: "--max-old-space-size=384"
+
+          # -------------------------------------------------------------------
+          # Probes
+          # -------------------------------------------------------------------
+          # startup: covers the boot window so the liveness probe cannot fire
+          # while the process is still coming up. failureThreshold 30 x 1 s
+          # gives 30 s to start — far more than the ~1 s observed, but the cost
+          # of generosity here is zero and the cost of being wrong is a boot
+          # loop. Once it passes, the other two take over.
+          startupProbe:
+            httpGet:
+              path: /api/health/live
+              port: http
+            periodSeconds: 1
+            failureThreshold: 30
+
+          # liveness: "is this process wedged?" Touches nothing external — no
+          # database, no Supabase Auth, no third party. The only remedy for
+          # failure is a restart, so anything it depends on becomes something
+          # that can restart every pod at once. The proxy matcher excludes
+          # /api/health for the same reason. See ADR-0012.
+          livenessProbe:
+            httpGet:
+              path: /api/health/live
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          # readiness: "can this pod serve a request right now?" This one is
+          # allowed to check the database, because failing it removes the pod
+          # from the Service's endpoints instead of killing it — when Postgres
+          # returns, so does the pod, with no restart.
+          readinessProbe:
+            httpGet:
+              path: /api/health/ready
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 2
+            successThreshold: 1
+
+          # Closes a race that maxUnavailable: 0 does not.
+          #
+          # When a pod is deleted, the kubelet sends SIGTERM and the endpoints
+          # controller removes it from the EndpointSlice AT THE SAME TIME, with
+          # no ordering between them. The ingress controller learns about the
+          # removal only after that propagates, so a process that exits
+          # promptly can stop accepting connections while nginx is still
+          # routing to it. Measured here: 1 connection refused out of 489
+          # during a rollback.
+          #
+          # preStop runs BEFORE SIGTERM. Sleeping through it keeps the old pod
+          # serving while the endpoint removal propagates; the process only
+          # begins shutting down once nothing is being sent to it any more.
+          # `sleep` exists because the base image is Debian — one of the
+          # concrete costs of a distroless image (ADR-0002).
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+          # readOnlyRootFilesystem means anything that writes needs an explicit
+          # mount. Next writes its cache under .next/cache at runtime; an
+          # emptyDir keeps that writable without making the whole filesystem so.
+          volumeMounts:
+            - name: next-cache
+              mountPath: /app/.next/cache
+            - name: tmp
+              mountPath: /tmp
+
+      volumes:
+        - name: next-cache
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

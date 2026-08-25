@@ -144,10 +144,33 @@ leak into a runtime environment and silently disable validation altogether.
 
 Laziness alone would trade one problem for another — a missing variable would
 surface as a 500 on whichever request first touched it, rather than at startup.
-The `instrumentation.ts` call restores fail-fast: a misconfigured container
-exits immediately and loudly. Under Kubernetes that surfaces as an obvious
-`CrashLoopBackOff` at rollout instead of an app that starts healthy and serves
-errors, which is the behaviour worth having.
+The `instrumentation.ts` call moves the failure back to boot.
+
+**Correction, made after observing it in Phase 3.** This originally claimed the
+container "exits immediately and loudly". It does not. When `register()`
+throws, Next logs `Failed to prepare server` and an `unhandledRejection` — and
+then keeps running, answering **every** request with a 500. The process stays
+alive:
+
+```
+✓ Ready in 0ms
+Failed to prepare server Error: An error occurred while loading instrumentation
+hook: Invalid environment variables:
+  - ENCRYPTION_KEY: Invalid input
+```
+
+So the guarantee is weaker than stated, and the distinction matters. Under
+Kubernetes the outcome is still correct, but the mechanism is the startup
+probe, not the process: the probe gets a 500, the kubelet restarts the
+container, and the pod ends up in `CrashLoopBackOff` without ever joining the
+Service's endpoints. Verified by injecting an empty `ENCRYPTION_KEY` into a
+running deployment — the broken pod never became ready, and the healthy pods
+kept serving throughout.
+
+Outside Kubernetes there is no such backstop. On Vercel, or under plain
+`docker run`, a container started with invalid configuration stays up and
+serves 500s indefinitely rather than exiting. Genuine process-level fail-fast
+would need an explicit `process.exit(1)` in the instrumentation hook.
 
 A second, less obvious property falls out of reading `process.env` as a whole
 object rather than by named property: Next does not inline it. The same image
@@ -606,3 +629,404 @@ a second real user existed.
 (client, mappers, upserts) but the loop that joins them is not. It is
 mostly sequencing, and covering it would mean mocking four paginated endpoints
 for little information gained.
+
+---
+
+## ADR-0012 — Liveness and readiness are different questions
+
+**Status:** accepted · Phase 3
+
+### The distinction
+
+They are not two strengths of the same check. They answer different questions
+and have different remedies:
+
+| | Question | Remedy on failure |
+| --- | --- | --- |
+| **liveness** | Is this process wedged? | Kill and restart the container |
+| **readiness** | Can this pod serve a request right now? | Remove it from the Service's endpoints |
+
+Because the only remedy for a failed liveness check is a restart, **anything
+liveness depends on becomes something that can restart every pod at once.**
+
+### Decision
+
+`/api/health/live` touches nothing outside the process — no database, no
+Supabase Auth, no third party. It returns 200 and the process uptime.
+
+`/api/health/ready` runs `select 1` against Postgres with a 2 s timeout and a
+5 s result cache, returning 503 when it fails.
+
+### The failure this prevents
+
+Had liveness checked the database, a 30-second Supabase blip would fail the
+probe on every pod simultaneously. Kubernetes would restart them all. The
+database would still be unreachable when they came back, so they would fail
+again — a `CrashLoopBackOff` caused entirely by the probe, turning a transient
+third-party degradation into a self-inflicted outage. The same check in
+readiness merely takes the pods out of rotation until Postgres returns, with no
+restarts and no lost process state.
+
+### A subtler version of the same mistake
+
+`proxy.ts` excludes `/api/health` in its matcher, rather than merely
+allowlisting it as a public path. `updateSession` calls
+`supabase.auth.getUser()`, which is a network round-trip to Supabase Auth **on
+every request**. Leaving the probes inside the matcher would have made the
+liveness check depend on a third party after all — through middleware, not
+through the route handler. Worth stating because it is exactly the kind of
+dependency that hides.
+
+### The accepted cost of gating readiness on the database
+
+With few replicas, all pods failing readiness at once means the Ingress returns
+503 for everything — including `/login`, the PWA shell, and static assets, none
+of which need a database. A clear "this is not serving" was preferred over a
+half-working site, but the trade is real and would deserve revisiting on an app
+whose logged-out pages carried value.
+
+### Caching and timeout
+
+Without the 5 s cache, readiness alone would open a Postgres connection several
+times a minute per pod, forever, to learn something that changes rarely. The
+2 s timeout matters because a probe that *hangs* is worse than one that fails:
+Kubernetes would wait out `timeoutSeconds` before acting, delaying the removal
+of the pod from service.
+
+### Startup probe
+
+A third probe exists so the other two cannot fire during boot: 30 attempts at
+1 s intervals against the liveness endpoint. The app starts in about a second,
+so this is generous — but the cost of generosity is zero and the cost of being
+wrong is a boot loop.
+
+It also turned out to be the component that actually enforces fail-fast on bad
+configuration, since the process itself does not exit. See the correction in
+ADR-0003.
+
+---
+
+## ADR-0013 — Resource requests measured; no CPU limit
+
+**Status:** accepted · Phase 3
+
+### Memory, measured against the real image
+
+| State | Usage |
+| --- | --- |
+| Idle after boot | 63 MiB |
+| Sustained load (~340 req/s) | 93 MiB |
+| Peak after burst, then stable | 122 MiB |
+
+Node retains heap rather than returning it to the OS, so the post-burst figure
+is the number that matters.
+
+- `requests.memory: 160Mi` — above the observed steady state. The request is
+  what the scheduler reserves; under-requesting gets pods placed on nodes that
+  cannot really host them.
+- `limits.memory: 512Mi` — roughly 4x the observed peak. Exceeding it means the
+  kernel OOM-kills the container (exit 137) and the kubelet restarts it. Too
+  low and legitimate traffic kills healthy pods; too high and a real leak grows
+  until it destabilises the node instead of failing one pod loudly.
+- `NODE_OPTIONS=--max-old-space-size=384` — Node sizes its heap from the cgroup
+  limit, but the default ceiling can sit close enough that the kernel kills the
+  process before V8 runs a serious GC. Capping the heap below the container
+  limit turns "OOMKilled, no explanation" into GC pressure and, at worst, a JS
+  heap error with a stack trace.
+
+### CPU: request only, no limit
+
+`requests.cpu: 100m`, no `limits.cpu`.
+
+`limits.cpu` is enforced by CFS quota: on reaching the quota the kernel stops
+the process until the next 100 ms period. For a bursty SSR workload that shows
+up directly as latency spikes, and it happens even when average utilisation is
+far below the limit. The request still guarantees a scheduling floor and a
+proportional share under contention, which is what actually protects the pod.
+
+The cost, stated plainly: nothing hard-caps this container's CPU, so a runaway
+loop could starve co-located pods. That is mitigated by correct requests across
+the cluster rather than by quotas.
+
+**Honest caveat on the CPU number.** `docker stats` reported 0.00% CPU while
+the container was demonstrably serving thousands of requests — CPU accounting
+is unreliable on the WSL2 backend. The 100m request is therefore reasoned, not
+measured: the app is idle almost all the time with brief render bursts, and a
+request is a floor rather than a cap. Validating it with `kubectl top` against
+metrics-server is outstanding work, and the number should be treated as
+provisional.
+
+---
+
+## ADR-0014 — Cluster topology: three nodes, two replicas
+
+**Status:** accepted · Phase 3
+
+A single-node cluster would run this application perfectly well, and one
+replica would carry the load of its one user. Three nodes and two replicas were
+chosen so the mechanisms are **observable**: pods land on different nodes via
+`podAntiAffinity`, and a rolling update visibly creates, gates, and drains pods
+rather than being an implementation detail.
+
+The anti-affinity rule is `preferred`, not `required`. A hard rule would leave
+the second pod `Pending` forever on a one-node cluster, which is a worse
+failure than co-location.
+
+Stated plainly for the record: two replicas are not a capacity decision here.
+They exist to make the deployment behave like a real one.
+
+Cost, measured: cluster creation 73 s, image side-load 39 s. Both are paid on
+every CI run in Phase 4 and count against its budget. The image is side-loaded
+with `kind load docker-image` rather than pulled from a registry, which is both
+faster and a guarantee that the artefact under test is the one just built.
+
+---
+
+## ADR-0015 — No TLS locally, and what a public deployment would add
+
+**Status:** accepted · Phase 3
+
+### Decision
+
+The Ingress serves plain HTTP. No cert-manager, no self-signed certificates.
+
+### Why
+
+A self-signed certificate for a made-up hostname on a laptop demonstrates
+nothing that reading the manifest would not. Every client has to be told to
+ignore it, so the security property being modelled — a client verifying a chain
+of trust — is precisely the part that does not happen. It would be ceremony.
+
+### What a public deployment needs
+
+1. **cert-manager** with a `ClusterIssuer` for Let's Encrypt (ACME), using the
+   HTTP-01 challenge for a single host or DNS-01 for wildcards. The Ingress
+   gains a `tls:` block and a `cert-manager.io/cluster-issuer` annotation;
+   certificates are then issued and renewed with no human involvement.
+2. **HTTP to HTTPS redirect** at the Ingress
+   (`nginx.ingress.kubernetes.io/ssl-redirect: "true"`, on by default once a
+   TLS block exists).
+3. **HSTS**, deliberately, and only once HTTPS is known to work — the header is
+   sticky, and a mistake locks clients out of the site.
+4. **A real hostname and DNS**, which is the actual prerequisite: ACME proves
+   control of a domain, so there is nothing to issue against on `localhost`.
+
+Two of those four steps are DNS and domain ownership. That is the honest reason
+this is omitted rather than simulated.
+
+### Also absent, and worth naming
+
+No `NetworkPolicy`. Pods in this namespace can reach anything and be reached by
+anything in the cluster. On a shared cluster, a default-deny policy with
+explicit egress to Supabase and Anthropic would be the baseline. It is omitted
+here because a single-tenant local cluster gives it nothing to defend against.
+
+---
+
+## ADR-0016 — Rolling updates, image tags, and rollback
+
+**Status:** accepted · Phase 3
+
+### Strategy
+
+`maxSurge: 1`, `maxUnavailable: 0`.
+
+`maxUnavailable: 0` makes the rollout strictly additive: a new pod is created,
+must pass its readiness probe, and only then is an old pod terminated. **That
+readiness gate is the entire mechanism behind a zero-downtime deploy** — with
+`maxUnavailable: 1` the old pod could be killed first, leaving the remaining
+replica to absorb all traffic while the new one boots.
+
+The cost is capacity: the cluster must have room for `replicas + 1` during a
+rollout, and the rollout will not start if it does not.
+
+Observed: a rollout of two replicas completed in 4.1 s.
+
+A related property was confirmed by accident while breaking things
+deliberately: a deployment whose new pods never pass their probes does not take
+the service down. The broken ReplicaSet stalls at one unready pod while the old
+pods keep serving, because `maxUnavailable: 0` forbids removing a healthy
+replica for one that has not proven itself.
+
+### Tag by commit SHA, never `:latest`
+
+`:latest` is a mutable pointer. Three consequences follow, and any one of them
+is disqualifying:
+
+1. **You cannot tell what is running.** `kubectl describe pod` reports
+   `healthos-app:latest`, which identifies nothing. A SHA names the exact
+   commit.
+2. **You cannot roll back.** Rollback means running the previous image; if both
+   the old and the new are called `latest`, there is no previous image to name.
+3. **Replicas can silently diverge.** With `imagePullPolicy: Always` and a
+   moved tag, a pod rescheduled after the tag moved pulls different code than
+   its siblings — one Deployment running two versions, with nothing reporting
+   it.
+
+A SHA tag is immutable, so the image is a fact about a commit rather than a
+name that happens to point somewhere today.
+
+### Rollback
+
+Kubernetes keeps previous ReplicaSets scaled to zero, which is what makes
+`kubectl rollout undo deploy/healthos` possible: it scales the previous
+ReplicaSet back up and the current one down, using the same additive strategy.
+Verified end to end — rolled forward to a new tag, rolled back, and confirmed
+the Deployment's image returned to the prior SHA.
+
+For this to remain possible, `revisionHistoryLimit` must not be trimmed to zero
+and old images must remain pullable — in Phase 4 that means not garbage
+collecting GHCR tags that are still deployable.
+
+### Zero-downtime, measured — and the gap that measurement found
+
+Traffic was run continuously through the Ingress during rollouts.
+
+| Run | Result |
+| --- | --- |
+| Rollback, no `preStop` | 488 OK, **1 connection refused** |
+| Two rollouts, with `preStop` | 681 OK, **1 connection refused** |
+| Control: same traffic, no rollout | **735 OK, 0 failures** |
+
+The control run establishes that the failures are rollout-related rather than
+ambient.
+
+The cause is a race that `maxUnavailable: 0` does not close. When a pod is
+deleted, the kubelet sends SIGTERM **and** the endpoints controller removes it
+from the EndpointSlice — concurrently, with no ordering between them. The
+ingress controller learns of the removal only once that propagates, so a
+process that shuts down promptly can stop accepting connections while nginx is
+still routing to it. Next's fast SIGTERM handling (ADR-0005) makes this *more*
+likely, not less.
+
+The mitigation is a `preStop` hook sleeping 5 s. It runs **before** SIGTERM, so
+the old pod keeps serving while the endpoint removal propagates.
+`terminationGracePeriodSeconds` must exceed it, hence 15. (`sleep` exists in
+the image because the base is Debian — a concrete cost of distroless, per
+ADR-0002.)
+
+**It reduced the failure rate but did not eliminate it:** one failure across two
+rollouts, rather than one across a single rollout. Whether the residual failure
+comes from pod termination or from Docker Desktop's host port-forwarding under
+connection churn was not determined — the in-cluster comparison that would have
+isolated it was not run. The honest claim is therefore "roughly 99.8% of
+requests succeed during a rollout, cause of the remainder unconfirmed", not
+"zero downtime".
+
+---
+
+## ADR-0017 — ConfigMap and Secret must not overlap
+
+**Status:** accepted · Phase 3
+
+### The bug this avoids
+
+The container takes its environment from two sources:
+
+```yaml
+envFrom:
+  - configMapRef: { name: healthos-config }
+  - secretRef:    { name: healthos-secrets }
+```
+
+**Later entries win.** The Secret was first created with
+`kubectl create secret generic --from-env-file=.env.local`, which copied
+*everything* in that file — including `TZ`, `ANTHROPIC_MODEL`,
+`WHOOP_API_HOSTNAME`, `WHOOP_REDIRECT_URI` and `NEXT_PUBLIC_APP_URL`, all of
+which the ConfigMap also defines. The Secret's values silently overrode the
+ConfigMap's, making the ConfigMap decorative: editing it would have changed
+nothing, with no error and no warning.
+
+The Secret is now built from a filtered key list so the two sets are disjoint,
+and the split is verified by listing the keys of each.
+
+### The dividing line
+
+Not "what feels sensitive" but "what would matter if it were printed in a log
+or committed to this repository". `ANTHROPIC_MODEL` is configuration.
+`ANTHROPIC_API_KEY` is not.
+
+### What a Kubernetes Secret actually is
+
+base64, not encryption. Anyone who can read the object, or read etcd, reads the
+credential. A real cluster would additionally enable encryption at rest for
+secrets and restrict `get`/`list` via RBAC — neither of which makes the value
+secret from a cluster administrator.
+
+### Getting secrets into a cluster without touching Git
+
+Locally: `kubectl create secret --from-env-file=.env.local`, where `.env.local`
+is gitignored. `k8s/secret.example.yaml` is a committed template with
+placeholder values and is never applied.
+
+That is fine for a laptop and does not scale — it is manual, unaudited, and
+invisible to anyone reviewing the deployment. In production, one of:
+
+1. **External Secrets Operator** — a committed `ExternalSecret` names which
+   keys to pull from Vault, AWS Secrets Manager, or GCP Secret Manager, and the
+   cluster reconciles the Secret into existence. Git holds a reference, never a
+   value; rotation happens at the source with no deploy. Preferred.
+2. **Sealed Secrets** — encrypted with the cluster controller's public key, so
+   the sealed file is safe to commit and only that cluster can decrypt it.
+   GitOps-friendly; rotation means re-sealing, and losing the controller's key
+   loses every sealed value.
+3. **SOPS with age or KMS** — files encrypted in place, decrypted at apply
+   time. Simple and tool-agnostic; the weak point is distributing the key to
+   whatever runs `apply`.
+
+What all three share, and the actual point: the plaintext never exists in the
+repository, and access to it is auditable independently of who can read the
+repo.
+
+---
+
+## ADR-0018 — The CrashLoopBackOff debugging loop
+
+**Status:** accepted · Phase 3
+
+Recorded because the exercise produced a finding, not just a demonstration.
+
+### The break
+
+An empty `ENCRYPTION_KEY` was injected into the running Deployment. Explicit
+`env` entries take precedence over `envFrom`, so this overrode the Secret
+without touching it — realistic, and reversible by removing one patch.
+
+### The loop
+
+1. **`kubectl get pods`** — *what* is the state? `0/1 Running`, restart count
+   climbing. Not `CrashLoopBackOff` yet, which was itself informative: the
+   container was starting successfully and failing something else.
+2. **`kubectl describe pod`** — *why*? The `Events` block at the bottom is
+   where the answer usually is:
+   `Startup probe failed: HTTP probe failed with statuscode: 500`, followed by
+   `Container app failed startup probe, will be restarted`. `Last State:
+   Terminated, Exit Code: 143` — SIGTERM, meaning the kubelet killed it
+   gracefully rather than the process crashing.
+3. **`kubectl logs <pod> --previous`** — the *crashed* instance, not the one
+   currently running. This is the flag people forget, and without it you read
+   the logs of a container that has not failed yet:
+   `Invalid environment variables: - ENCRYPTION_KEY: Invalid input`.
+
+Three commands from symptom to root cause.
+
+### What it revealed
+
+The pod was `0/1 Running`, not crashing, because **Next does not exit when the
+instrumentation hook throws** — it logs the failure and serves 500s. The
+restart loop is driven entirely by the startup probe. This contradicted a claim
+made in ADR-0003, which has been corrected there.
+
+### Reading the states
+
+- `0/1 Running` — the container is up; a probe is failing. Look at probes.
+- `CrashLoopBackOff` — the container keeps exiting. Look at
+  `logs --previous` and the exit code. The kubelet backs off exponentially up
+  to five minutes, so a pod in this state can look "stuck" while it is merely
+  waiting.
+- `CreateContainerConfigError` — a referenced ConfigMap or Secret key does not
+  exist. The container never starts, so there are no logs at all.
+- `ImagePullBackOff` — the tag does not exist or credentials are missing. In
+  kind, usually a forgotten `kind load docker-image`.
+- Exit code 137 — SIGKILL, almost always the OOM killer: check
+  `limits.memory`. Exit code 143 — SIGTERM, something asked it to stop.

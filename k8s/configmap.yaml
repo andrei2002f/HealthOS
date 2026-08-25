@@ -1,0 +1,33 @@
+# Non-confidential configuration.
+#
+# The dividing line between this file and the Secret is not "what feels
+# sensitive" but "what would matter if it were printed in a log or committed
+# here". Everything below is either public by nature or already baked into the
+# browser bundle at build time.
+#
+# NEXT_PUBLIC_* values appear here for completeness and for server-side reads,
+# but note they were already substituted into the client bundle during
+# `docker build` — changing them here does not change what the browser uses.
+# See docs/DECISIONS.md, ADR-0003.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: healthos-config
+  namespace: healthos
+  labels:
+    app.kubernetes.io/name: healthos
+data:
+  NODE_ENV: "production"
+  PORT: "3000"
+  HOSTNAME: "0.0.0.0"
+
+  # Business logic must never hardcode this; it is read through config.
+  TZ: "Europe/Bucharest"
+
+  WHOOP_API_HOSTNAME: "https://api.prod.whoop.com"
+  WHOOP_REDIRECT_URI: "http://localhost/api/whoop/callback"
+
+  # Model id is configuration, never a literal in the code.
+  ANTHROPIC_MODEL: "claude-sonnet-4-6"
+
+  NEXT_PUBLIC_APP_URL: "http://localhost"

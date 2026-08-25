@@ -1,0 +1,12 @@
+# A namespace of its own, not `default`.
+#
+# It costs nothing and buys two things: `kubectl delete namespace healthos`
+# removes every object this project created in one command, and resource quotas
+# or network policies could later be scoped to it without touching anything
+# else on the cluster.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: healthos
+  labels:
+    app.kubernetes.io/name: healthos
