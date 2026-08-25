@@ -1,0 +1,93 @@
+# Postgres inside the cluster — CI only. Never applied locally.
+#
+# Why this exists at all: the readiness probe runs `select 1`, so pods do not
+# become Ready without a reachable database, and without Ready pods the rollout
+# never completes and the smoke test has nothing to hit. Production credentials
+# must not exist in CI, so the cluster brings its own database.
+#
+# This is a different Postgres from the one the integration tests use. That one
+# is a GitHub Actions service container reachable at localhost on the runner;
+# this one has to be reachable from inside the cluster, which a service
+# container is not. Same image, two jobs, two purposes.
+#
+# `emptyDir` storage, deliberately: the cluster is destroyed at the end of every
+# run, so durability would be pretending.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: healthos
+  labels:
+    app.kubernetes.io/name: postgres
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: healthos
+  labels:
+    app.kubernetes.io/name: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-bookworm
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: postgres
+            - name: POSTGRES_PASSWORD
+              value: postgres
+            - name: POSTGRES_DB
+              value: healthos
+            # The image refuses to initialise into a directory that already has
+            # content; a subdirectory keeps it clear of the mount point.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            # The same auth shim the local compose stack and the integration
+            # tests use, so every environment gets the same stand-in schema.
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "healthos"]
+            periodSeconds: 2
+            timeoutSeconds: 3
+            failureThreshold: 30
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: 50m
+            limits:
+              memory: 512Mi
+      volumes:
+        - name: init
+          configMap:
+            # Created by the workflow from docker/postgres-init/, so the SQL
+            # lives in exactly one place in the repository.
+            name: postgres-init
+        - name: data
+          emptyDir: {}

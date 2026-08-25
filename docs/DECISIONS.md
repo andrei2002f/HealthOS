@@ -1030,3 +1030,190 @@ made in ADR-0003, which has been corrected there.
   kind, usually a forgotten `kind load docker-image`.
 - Exit code 137 — SIGKILL, almost always the OOM killer: check
   `limits.memory`. Exit code 143 — SIGTERM, something asked it to stop.
+
+---
+
+## ADR-0019 — Two jobs, and where the gate is
+
+**Status:** accepted · Phase 4
+
+### Decision
+
+`verify` (lint, typecheck, unit and integration tests) then `deploy` (build,
+kind cluster, rollout, smoke test, push). `deploy` declares `needs: verify`.
+
+### Why that is the gate
+
+`needs` is a scheduling dependency, not a conditional. A failing test does not
+cause the deploy job to start and then fail — **it is never scheduled at all.**
+Nothing in the deploy job can run, so there is no ordering mistake that could
+let a build reach the registry ahead of the tests.
+
+The alternative shapes were rejected for concrete reasons:
+
+- **One job, sequential steps.** Simpler, and the gate would be implicit in
+  step order. But step order is a weaker guarantee than a dependency edge: a
+  later refactor that moves a step, or adds `continue-on-error`, silently
+  removes the gate with nothing to notice it.
+- **Three or more jobs with lint, typecheck and tests in parallel.** Each job
+  pays checkout, Node setup, and dependency install again. For a repository
+  this size that fixed cost exceeds the parallelism gained, and it multiplies
+  cache traffic.
+
+### Fail fast at the earliest possible point
+
+The very first step of the workflow checks that the required repository
+variables exist — a deploy-job concern, deliberately placed in `verify`.
+Without them the image bakes empty strings into the browser bundle and the
+runtime environment fails Zod validation at boot, so pods never become Ready
+and the run dies four minutes later pointing at the wrong thing. Ten seconds
+and an unambiguous error beats conceptual tidiness.
+
+---
+
+## ADR-0020 — Two databases, for two different jobs
+
+**Status:** accepted · Phase 4
+
+The pipeline runs Postgres twice, in two different ways, and the distinction is
+worth being able to explain.
+
+| | Integration tests | Deployed application |
+| --- | --- | --- |
+| **Where** | GitHub Actions service container | Pod inside the kind cluster |
+| **Reached at** | `localhost:5432` on the runner | `postgres.healthos.svc.cluster.local` |
+| **Why that form** | The tests run on the runner | Cluster pods cannot reach the runner's localhost |
+
+### Why the cluster needs its own
+
+The readiness probe runs `select 1`. Without a reachable database, pods never
+become Ready; without Ready pods, `rollout status` never returns and the smoke
+test has nothing to hit. The run would fail — but for the wrong reason, and the
+failure would look like a broken manifest.
+
+Production credentials must never exist in CI, so the cluster brings its own
+database rather than reaching for the real one.
+
+### One shim, three environments
+
+`docker/postgres-init/00-auth-shim.sql` is used by the local Compose stack, by
+the integration tests, and by the in-cluster Postgres — mounted as a ConfigMap
+built from that same file. The stand-in `auth` schema is defined once.
+
+That the integration suite applies the shim itself, rather than relying on
+`/docker-entrypoint-initdb.d`, is what lets it run against a service container
+at all: service containers cannot mount init scripts. A decision made in Phase
+2 for tidiness turned out to be the thing that made Phase 4 possible.
+
+### Storage
+
+`emptyDir`. The cluster is destroyed at the end of every run, so a
+PersistentVolumeClaim would be modelling durability that does not exist.
+
+---
+
+## ADR-0021 — Side-load into kind; push to the registry only after the smoke test
+
+**Status:** accepted · Phase 4
+
+### Decision
+
+The image is built into the runner's Docker daemon (`load: true`), side-loaded
+with `kind load docker-image`, deployed, and pushed to GHCR **only after the
+smoke test passes**.
+
+### Rationale
+
+Pushing first and having the cluster pull would put a 280 MB upload and
+download on the critical path to learn nothing the local daemon does not
+already know. Side-loading is faster (15 s, measured) and guarantees the
+artefact under test is exactly the one just built, with no tag resolution in
+between.
+
+Pushing last changes what the registry means: it holds images that have
+demonstrably served traffic, not everything that compiled. `docker push` after
+a green smoke test is a record of what worked.
+
+### What is given up
+
+The pipeline never exercises `imagePullSecrets` or a registry pull, which a
+production cluster would do on every deploy. That path is untested here. On a
+real deployment it would be worth adding a stage that pulls the pushed image
+back and runs against it.
+
+### Tag by commit SHA
+
+Covered in ADR-0016. The CI-specific detail: `github.repository` preserves the
+repository's original casing and GHCR rejects uppercase in a path, so the name
+is lowercased before tagging. It fails at push time, after everything else has
+succeeded, which is an expensive place to discover it.
+
+### Free-tier constraint, stated plainly
+
+GitHub Packages gives a **private** repository 500 MB of storage. This image is
+280 MB. Layers are shared between tags, so successive builds add roughly the
+size of the application layers rather than a full copy — realistically three or
+four tags before the limit.
+
+That is in direct tension with ADR-0016, which requires old images to remain
+pullable for rollback. **The honest consequence: the rollback window is
+approximately three deploys, not unlimited.** Either old versions get pruned
+manually, or the repository becomes public — public packages have no storage
+limit — which is the Phase 5 plan anyway.
+
+Actions minutes: a private repository on the Free plan includes 2,000 per
+month. At the measured run time that is roughly 300 runs. `concurrency` with
+`cancel-in-progress` stops a superseded commit from consuming a full run.
+
+---
+
+## ADR-0022 — What the smoke test checks, and why those four
+
+**Status:** accepted · Phase 4
+
+Requests go through the Ingress at `http://localhost`, which is why the CI kind
+config keeps its port mappings: a `kubectl port-forward` would be faster but
+would bypass `ingress.yaml`, leaving one of the manifests unproven. The stated
+purpose of this phase is that the manifests work on every push, and the Ingress
+is one of them.
+
+Each path guards a distinct regression that has a plausible cause:
+
+| Path | What it would catch |
+| --- | --- |
+| `/api/health/live` | The process starts and answers — the floor. |
+| `/api/health/ready` | The pod reached Postgres from inside the cluster. Covers Service DNS, the in-cluster database, and that the Secret's `DATABASE_URL` arrived. |
+| `/login` | Server rendering works and hashed static chunks resolve — catches a runner stage that forgot `.next/static`. |
+| `/sw.js` | `public/` was copied from the **builder** stage, not the build context. Serwist generates it during the build, so a wrong `COPY` ships an app with no service worker, and nothing else notices. |
+
+The last one is the least obvious and the most valuable: it is a regression
+test for a specific mistake the Dockerfile could make, expressed as an HTTP
+request.
+
+`rollout status --timeout` is itself part of the test. A manifest that applies
+cleanly but whose pods never pass their probes is not a success, and the
+timeout is what turns that into a failure rather than a hang.
+
+### Measured stage timings
+
+From a full local rehearsal of the deploy job against the CI configuration:
+
+| Stage | Time |
+| --- | --- |
+| Create cluster (1 node) | 33 s |
+| Install ingress-nginx and wait | 34 s |
+| `kind load docker-image` (1 node) | 15 s |
+| In-cluster Postgres ready | 21 s |
+| Application rollout | 2 s |
+| Smoke test | 1 s |
+
+Roughly 106 s of cluster work, before the image build. The single-node choice
+(ADR-0014) is visible here: 33 s against 73 s for three nodes, and 15 s against
+39 s to load the image.
+
+### Diagnostics on failure
+
+A `failure()` step dumps pods, `describe`, both current and `--previous` logs,
+and recent events. A CI failure you cannot diagnose without re-running the job
+with extra logging costs another full run — and `--previous` is the flag that
+matters, since by the time anyone looks, the failed container has been replaced.

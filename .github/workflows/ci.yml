@@ -1,0 +1,277 @@
+name: CI
+
+# Two jobs. `verify` is cheap and runs first; `deploy` stands up a real
+# Kubernetes cluster and is gated behind it by `needs: verify` — if a single
+# test fails, the deploy job is never scheduled, rather than started and failed.
+#
+# Rationale for the choices here is in docs/DECISIONS.md, ADR-0019..0022.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# A second push to the same branch cancels the first. On a private repository
+# Actions minutes are metered, and there is no value in finishing a run whose
+# commit has already been superseded.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # verify — lint, types, and the full test suite
+  # ---------------------------------------------------------------------------
+  verify:
+    name: Lint, typecheck, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      # Reachable at localhost on the runner, which is where the integration
+      # tests run. The suite applies the auth shim and the migration chain
+      # itself (see lib/db/__test__/global-setup.ts), so no init mount is
+      # needed here — that is why it also works against a service container,
+      # which cannot mount one.
+      postgres:
+        image: postgres:17-bookworm
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: healthos
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d healthos"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+
+    steps:
+      # Deliberately the first step in the whole workflow, even though it is a
+      # concern of the deploy job. Without these the image bakes empty strings
+      # into the browser bundle and the runtime env fails Zod validation at
+      # boot, so pods never become Ready and the run dies four minutes later
+      # with an error that points at the wrong thing. Ten seconds and an
+      # unambiguous message beats conceptual tidiness.
+      - name: Check required repository variables
+        env:
+          SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+        run: |
+          fail=0
+          if [ -z "$SUPABASE_URL" ]; then
+            echo "::error::Repository variable NEXT_PUBLIC_SUPABASE_URL is not set (Settings → Secrets and variables → Actions → Variables)"
+            fail=1
+          fi
+          if [ -z "$SUPABASE_ANON_KEY" ]; then
+            echo "::error::Repository variable NEXT_PUBLIC_SUPABASE_ANON_KEY is not set"
+            fail=1
+          fi
+          exit $fail
+
+      - uses: actions/checkout@v4
+
+      # Reads the pinned version from `packageManager` in package.json, so CI
+      # and the Dockerfile install with the same pnpm.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # Split so a failing unit test reports in seconds without waiting on the
+      # database-backed suite.
+      - name: Unit tests
+        run: pnpm test:unit
+
+      - name: Integration tests
+        run: pnpm test:integration
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/healthos
+
+  # ---------------------------------------------------------------------------
+  # deploy — build the image, run it on a real cluster, prove it serves
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Build, deploy to kind, smoke test
+    needs: verify # ← the gate: nothing below runs unless `verify` succeeded
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      contents: read
+      packages: write
+
+    env:
+      IMAGE_TAG: ${{ github.sha }}
+      LOCAL_IMAGE: healthos-app:${{ github.sha }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # Into the runner's Docker daemon, not a registry: the cluster is
+          # side-loaded from there, so the artefact under test is exactly the
+          # one just built, with no push/pull round trip on the critical path.
+          load: true
+          tags: ${{ env.LOCAL_IMAGE }}
+          # Layer ordering in the Dockerfile is the necessary condition for
+          # cache reuse; on an ephemeral runner there is nothing to reuse
+          # without also transporting the cache, which is what this does.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            NEXT_PUBLIC_SUPABASE_URL=${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+            NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+            NEXT_PUBLIC_APP_URL=http://localhost
+
+      - name: Install kind
+        run: |
+          curl -sSLo ./kind https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+          kind version
+
+      - name: Create cluster
+        run: kind create cluster --config k8s/ci/kind-cluster.yaml --wait 180s
+
+      - name: Install ingress-nginx
+        run: |
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.11.3/deploy/static/provider/kind/deploy.yaml
+          kubectl -n ingress-nginx wait --for=condition=Ready pod \
+            --selector=app.kubernetes.io/component=controller --timeout=240s
+
+      - name: Load image into cluster
+        run: kind load docker-image "$LOCAL_IMAGE" --name healthos-ci
+
+      - name: Start in-cluster Postgres
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+          # The shim SQL lives in one place in the repo and is mounted from
+          # there, so local, test and CI databases share the same stand-in.
+          kubectl -n healthos create configmap postgres-init \
+            --from-file=docker/postgres-init/00-auth-shim.sql
+          kubectl apply -f k8s/ci/postgres.yaml
+          kubectl -n healthos rollout status deploy/postgres --timeout=180s
+
+      - name: Create configuration
+        run: |
+          kubectl apply -f k8s/configmap.yaml
+
+          # Every value here is either pointed at the in-cluster database or a
+          # placeholder. No production credential exists in this workflow.
+          # They are present because lib/env.ts validates the whole schema at
+          # boot and the app will not start with any of them missing.
+          #
+          # Keys are disjoint from the ConfigMap on purpose: envFrom applies
+          # sources in order and the last one wins, so an overlapping key here
+          # would silently override the ConfigMap (ADR-0017).
+          kubectl -n healthos create secret generic healthos-secrets \
+            --from-literal=DATABASE_URL='postgres://postgres:postgres@postgres.healthos.svc.cluster.local:5432/healthos' \
+            --from-literal=NEXT_PUBLIC_SUPABASE_URL='${{ vars.NEXT_PUBLIC_SUPABASE_URL }}' \
+            --from-literal=NEXT_PUBLIC_SUPABASE_ANON_KEY='${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY }}' \
+            --from-literal=SUPABASE_SERVICE_ROLE_KEY='ci-placeholder' \
+            --from-literal=WHOOP_CLIENT_ID='ci-placeholder' \
+            --from-literal=WHOOP_CLIENT_SECRET='ci-placeholder' \
+            --from-literal=ANTHROPIC_API_KEY='ci-placeholder' \
+            --from-literal=ALLOWED_EMAIL='ci@example.com' \
+            --from-literal=ENCRYPTION_KEY='ci-placeholder-encryption-key-32-chars' \
+            --from-literal=CRON_SECRET='ci-placeholder'
+
+      - name: Deploy application
+        run: |
+          # The committed manifest carries a real SHA tag so it is applyable as
+          # written; CI substitutes the tag for this commit rather than running
+          # `apply` and then `set image`, which would trigger two rollouts.
+          sed -i "s|image: healthos-app:.*|image: $LOCAL_IMAGE|" k8s/deployment.yaml
+
+          kubectl apply -f k8s/deployment.yaml
+          kubectl apply -f k8s/service.yaml
+          kubectl apply -f k8s/ingress.yaml
+
+          # Fails the job if the new pods never pass their probes, which is the
+          # point: a manifest that applies but does not run is not a success.
+          kubectl -n healthos rollout status deploy/healthos --timeout=300s
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          # Through the Ingress on localhost, so ingress.yaml is exercised too
+          # rather than bypassed with a port-forward.
+          #
+          # Each path guards a distinct regression:
+          #   live   — the process answers at all
+          #   ready  — the pod reached the database from inside the cluster
+          #   login  — server rendering works and static chunks resolve
+          #   sw.js  — public/ was copied from the builder stage, not the build
+          #            context; Serwist generates it during the build, so a
+          #            wrong COPY ships an app with no service worker
+          for path in /api/health/live /api/health/ready /login /sw.js; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "http://localhost${path}")
+            echo "${path} -> ${code}"
+            if [ "${code}" != "200" ]; then
+              echo "::error::smoke test failed on ${path} (HTTP ${code})"
+              exit 1
+            fi
+          done
+          echo "smoke test passed"
+
+      # Only reached when the image has demonstrably served traffic, so the
+      # registry holds verified images rather than everything that compiled.
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push verified image
+        if: github.event_name == 'push'
+        run: |
+          # GHCR rejects uppercase in a repository path; github.repository
+          # preserves the original casing.
+          repo=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          remote="ghcr.io/${repo}:${IMAGE_TAG}"
+          docker tag "$LOCAL_IMAGE" "$remote"
+          docker push "$remote"
+          echo "pushed ${remote}"
+
+      # Everything needed to diagnose a failure without re-running the job.
+      - name: Diagnostics
+        if: failure()
+        run: |
+          echo "=== pods ==="
+          kubectl -n healthos get pods -o wide || true
+          echo "=== describe ==="
+          kubectl -n healthos describe pods || true
+          echo "=== logs (previous instance, if any) ==="
+          kubectl -n healthos logs -l app.kubernetes.io/name=healthos \
+            --tail=120 --previous || true
+          echo "=== logs (current) ==="
+          kubectl -n healthos logs -l app.kubernetes.io/name=healthos --tail=120 || true
+          echo "=== events ==="
+          kubectl -n healthos get events --sort-by=.lastTimestamp | tail -40 || true
+
+      # The runner is destroyed either way, so this proves the teardown path
+      # works rather than reclaiming anything.
+      - name: Tear down cluster
+        if: always()
+        run: kind delete cluster --name healthos-ci || true
