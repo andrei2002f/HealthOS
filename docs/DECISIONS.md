@@ -1217,3 +1217,194 @@ A `failure()` step dumps pods, `describe`, both current and `--previous` logs,
 and recent events. A CI failure you cannot diagnose without re-running the job
 with extra logging costs another full run — and `--previous` is the flag that
 matters, since by the time anyone looks, the failed container has been replaced.
+
+---
+
+# Honest assessment
+
+Not an ADR. A candid read of what this infrastructure work is worth, written
+so the weaknesses are named here rather than discovered by someone else.
+
+The organising question is not "is this good?" but **"what would a senior
+engineer say about it, and can I say it first?"**
+
+---
+
+## What holds up
+
+**Integration tests against a real Postgres, with the schema built by replaying
+the real migration chain.** Not `drizzle-kit push`, not a mocked query builder.
+This is the least common thing in the repository and the most directly useful.
+It means `ON CONFLICT` resolution, `ON DELETE cascade` and a `LEFT JOIN` that
+prevents duplicates are actually verified, and it turns "the migrations replay
+from empty" into a check that runs on every push.
+
+**The migration repair, and specifically the order it was done in.** Migration
+`0001` retyped foreign-key children before their parents, so the chain could
+not be replayed onto an empty database — a defect that survived five months
+because nothing rebuilt the schema. What matters is not finding it but what
+happened next: production records that migration as applied, so before editing
+the file, drizzle's migrator source was read to establish that it compares only
+the newest applied `created_at` against each journal entry and never re-reads
+the stored hash. Then that was *reproduced locally* — end state, the old hash
+written back into `__drizzle_migrations`, `migrate` re-run — and confirmed to
+apply nothing. Reading the source is diligence; reproducing the production
+state before touching it is the part worth pointing at.
+
+**Numbers that were measured, including when the measurement was inconvenient.**
+Three claims made during this work turned out to be wrong and are corrected in
+place rather than quietly rewritten: a misconfigured container does not exit
+(ADR-0003), the rollout is not zero-downtime (ADR-0016), and lazy environment
+validation alone did not fix the build because four modules read `env` at
+import scope. The control run — 735 requests with no rollout, zero failures —
+exists specifically so the rollout failures could not be dismissed as ambient
+noise. That instinct, to run the control, is the thing to demonstrate.
+
+**The liveness/readiness split, argued from a concrete failure cascade** rather
+than from the documentation. And the catch that goes with it: `proxy.ts` calls
+`supabase.auth.getUser()` on every request, so leaving the probes inside the
+matcher would have made liveness depend on Supabase Auth *through middleware*.
+That dependency is invisible in the route handler and would have been found
+during an outage rather than before one.
+
+**The mock-boundary reasoning.** Mocking at `getAnthropic()` — the narrowest
+seam we own — with an explicit account of why `fetch` is worse: it would mean
+reimplementing someone else's wire format, producing a test that passes while
+the real integration is broken and fails on an SDK upgrade that changed nothing
+relevant.
+
+---
+
+## Competent, but would not distinguish anyone
+
+These are correct and worth having. They are also what a good tutorial
+produces, and claiming them as achievements invites a shrug.
+
+**The multi-stage Dockerfile.** Lockfile before source, non-root numeric UID,
+`readOnlyRootFilesystem`, dropped capabilities — table stakes. What is actually
+interesting sits underneath: that `output: "standalone"` omits `public/` and
+`.next/static`, that Serwist generates `public/sw.js` *during* the build so it
+must be copied from the builder stage rather than the context, and that
+`NEXT_PUBLIC_*` is a build-time textual substitution which ties an image to one
+Supabase project. Lead with those, not with "I used multi-stage builds".
+
+**The Kubernetes manifests.** Correct, and every line is commented. But a
+tutorial writes the same YAML. What raises them slightly is that each number
+has a stated reason — `maxUnavailable: 0` because the readiness gate is the
+zero-downtime mechanism, `preferred` anti-affinity because a hard rule would
+leave a pod `Pending` on one node, `terminationGracePeriodSeconds: 15` because
+it must exceed a 5 s `preStop` plus a 0.3 s shutdown.
+
+**The CI structure.** Two jobs with `needs` is the obvious shape. The
+defensible details are smaller: the gate is a scheduling dependency rather than
+a condition, and the repository-variable check runs first — a deploy concern
+placed in the verify job on purpose, because failing in ten seconds with a
+clear message beats failing in four minutes pointing at the wrong thing.
+
+---
+
+## Cargo cult, if presented as anything else
+
+**Kubernetes, for this application.** One user, a managed database, and a real
+deployment that happens on Vercel. Already stated in ADR-0001, and it has to be
+stated first in conversation too.
+
+**Two replicas.** Not a capacity decision. They exist so a rolling update is
+observable. ADR-0014 says so; a claim that they provide availability would be
+false, since a single-user app has no availability requirement to speak of.
+
+**`podAntiAffinity` across three local nodes.** Pure demonstration. It spreads
+pods across nodes that are containers on one laptop, which protects against
+nothing.
+
+**`seccompProfile: RuntimeDefault` and dropped capabilities.** Correct
+defaults, and cheap. But on a single-tenant local cluster they defend against
+no realistic adversary. Worth having; not worth presenting as security
+engineering.
+
+**Resource requests and limits.** The *method* is sound — memory measured
+across three states, a limit set at roughly four times the observed peak, a
+heap ceiling below the container limit so V8 hits GC pressure before the kernel
+OOM-kills. The *need* is absent: nothing contends for resources on this
+cluster. This is practice at a technique, not a solution to a problem that
+existed.
+
+**The teardown step in CI.** The runner is destroyed regardless. It proves the
+path works; describing it as resource management would be false.
+
+---
+
+## The gaps a senior would find
+
+Listed because being asked about a gap you have already named lands very
+differently from being caught by it.
+
+**There is no continuous deployment.** The pipeline builds an image, deploys it
+to an ephemeral cluster, proves it serves, and destroys the cluster. Nothing is
+deployed to a persistent environment; the Vercel deploy is entirely separate and
+untouched by any of this. That is genuinely valuable — it proves the manifests
+work on every push rather than the one time they were run by hand — but calling
+it CD is overclaiming. It is CI with a deployment rehearsal.
+
+**Row-level security is decorative on the path the application actually uses.**
+Every table has RLS enabled and an owner policy, and the app connects as the
+database owner, so none of it is ever evaluated. The real access control is the
+`user_id` filter written into each query. RLS is a backstop for the
+anon/authenticated key path that this app does not use for data access. It is
+the single largest gap between what the schema appears to guarantee and what
+it actually guarantees.
+
+**No observability whatsoever.** No metrics, no structured logging, no tracing,
+no dashboards, no alerts. What exists is `console.log` with a bracketed prefix.
+An infrastructure track that stops before observability is incomplete, and this
+is the most obvious next thing to build — the health endpoints are a natural
+place to start, and `sync_logs` already holds the shape of an operational
+record.
+
+**No PodDisruptionBudget.** With two replicas and `maxUnavailable: 0` on the
+Deployment, a voluntary disruption — a node drain during a cluster upgrade —
+can still evict both pods at once, because the Deployment strategy governs
+rollouts, not evictions. On a real cluster this would matter.
+
+**No NetworkPolicy.** Named in ADR-0015. Pods can reach anything and be reached
+by anything in the cluster.
+
+**The registry pull path is never exercised.** Images are side-loaded with
+`kind load`, so `imagePullSecrets` and a real pull are untested — and that is
+exactly what a production cluster does on every deploy.
+
+**The rollback window is about three deploys**, bounded by GHCR's 500 MB free
+allowance for a private repository, which contradicts what ADR-0016 assumes.
+
+**One rollout failure in roughly 500 requests is unexplained.** The `preStop`
+hook reduced it and did not remove it, and the in-cluster comparison that would
+have separated pod termination from Docker Desktop's port forwarding was not
+run.
+
+**The CPU request is reasoned, not measured**, because `docker stats` reported
+0.00% while the container was serving thousands of requests. It should be
+validated with `kubectl top`.
+
+**Load figures are not benchmarks.** "337 req/s" came from a `curl` loop on a
+laptop against a container sharing that laptop with a Kubernetes cluster. It
+establishes that the app responds under concurrency and nothing more.
+
+**Single-user assumptions are baked into the schema.** `whoop_workouts` is keyed
+on the Whoop id alone rather than `(user_id, id)`. One test pins this so the
+assumption is visible rather than implied.
+
+---
+
+## How to talk about it
+
+The work is worth showing. The framing that makes it land:
+
+> "It is a personal project, so nothing here was forced on me by scale — I
+> built the deployment path I would use on a team, on a codebase I control
+> completely and can be questioned about in depth. The parts I would actually
+> defend are the test suite and the measurements, because both of them caught
+> things I had got wrong."
+
+Then let the specifics do the work: a migration that could not replay, a
+claimed fail-fast that did not exit, a zero-downtime rollout that dropped one
+request in five hundred. Concrete corrections beat a list of technologies.
