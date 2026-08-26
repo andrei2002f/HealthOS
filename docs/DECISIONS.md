@@ -1261,6 +1261,16 @@ review would have caught:
    image. The ordering was right from the start; the context was not, and only
    reading the build log revealed it.
 
+   Measured after the fix, on a commit that touched only `docs/`:
+
+   | | Build image | Wall clock |
+   | --- | --- | --- |
+   | Context invalidated | 133 s | 351 s |
+   | Context unchanged | **13 s** | **213 s** |
+
+   A tenfold difference on the stage that was half the pipeline, from one line
+   in `.dockerignore`.
+
 ### Diagnostics on failure
 
 A `failure()` step dumps pods, `describe`, both current and `--previous` logs,
