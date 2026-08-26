@@ -1491,6 +1491,142 @@ than pretending the loop is closed.
 
 ---
 
+## ADR-0027 — Alertmanager: routing, grouping, inhibition
+
+**Status:** accepted · Phase 6
+
+### The gap this closes
+
+Prometheus decides *when* something is wrong. Alertmanager decides *who hears
+about it, how often, and whether it is worth hearing at all*. Without it, the
+four rules from ADR-0026 changed a colour on a page nobody was looking at — a
+fact recorded in the honest assessment rather than hidden.
+
+### The routing tree is the decision; the Deployment is boilerplate
+
+```
+route (default: warning, group_by [alertname, severity])
+├── alertname="Watchdog"  → watchdog   group_wait 0s   repeat 5m
+├── severity="critical"   → critical   group_wait 10s  repeat 4h
+└── severity="warning"    → warning    group_wait 2m   repeat 24h
+```
+
+**Grouping** is on `[alertname, severity]`, so one notification covers an alert
+however many series are firing, and an alert that flaps updates a group rather
+than sending twenty messages.
+
+**`group_wait`** trades latency for coherence: 10s for critical because speed is
+the point, 2m for warnings so related ones arrive together.
+
+**`repeat_interval`** is the single most consequential number here. Too short
+and you train yourself to swipe notifications away; too long and a real problem
+fades from memory. 4h for critical, 24h for warning.
+
+### Inhibition
+
+```yaml
+- source_matchers: ['alertname = "WhoopSyncNotRunning"']     # the disease
+  target_matchers: ['alertname = "WhoopSyncApproachingTimeout"']  # the symptom
+  equal: []
+```
+
+If syncs have stopped entirely, also being told they are slow is noise at
+exactly the moment attention is scarcest. The same applies to a failing token
+refresh: every subsequent sync will fail, so report the cause rather than the
+consequence.
+
+`equal: []` because both alerts are cluster-global and share no distinguishing
+labels — there is nothing to match them on beyond both firing. This is the part
+worth being careful about: on a multi-tenant setup it would be
+`equal: [namespace]`, and an empty `equal` there would let one tenant's critical
+silence another tenant's warnings.
+
+### Where alerts go
+
+ntfy.sh — free, no account, no card, open source, and it reaches a phone. The
+topic is a **capability**: anyone who knows the string can read and post to it.
+So it is a long random value held in a Secret rather than in the ConfigMap, and
+alert bodies carry rule names and durations, never user data. `url_file` keeps
+it out of the committed config entirely.
+
+The `http_headers` on each receiver are what make the notification readable —
+ntfy renders them as title, priority and icon. Without them the phone shows
+Alertmanager's raw JSON body: delivered, but unreadable at a glance, and a
+notification you have to parse is one you learn to ignore.
+
+### Verified end to end
+
+- `Watchdog` reaches Alertmanager and routes to the `watchdog` receiver.
+- An injected `severity=critical` alert routes to `critical` and arrives on the
+  phone as **"Health OS — critical", priority 5**.
+- An injected `WhoopSyncApproachingTimeout` alongside `WhoopSyncNotRunning`
+  reports `state=suppressed` with `inhibitedBy` naming the critical's
+  fingerprint — and is never sent.
+
+### Known rough edge
+
+Editing the ConfigMap does not restart the pod, so a config change needs a
+manual `rollout restart`. The usual fix is a checksum annotation computed at
+apply time, which needs a templating step this repo deliberately avoids. Noted
+rather than solved.
+
+---
+
+## ADR-0028 — The dead man's switch
+
+**Status:** accepted · Phase 6
+
+### Why this project in particular needs one
+
+Every alert in ADR-0026 detects a condition. This one exists so its **absence**
+can be detected, and that matters here more than in most systems.
+
+The signature failure of this project is *silence*:
+
+- a Whoop sync killed mid-run by the serverless limit, leaving rows at
+  `status="running"` with no error recorded anywhere;
+- a sub-daily cron expression rejected by Vercel, which made every deploy fail
+  for **five months** without raising anything;
+- a migration chain that could not replay, invisible until something rebuilt
+  the schema from scratch.
+
+Monitoring has exactly the same failure mode, and it is the one thing the
+monitoring cannot tell you about itself. If Prometheus dies, every rule stops
+firing at once — and total silence is indistinguishable from perfect health.
+
+### The mechanism
+
+A rule that is always true:
+
+```yaml
+- alert: Watchdog
+  expr: vector(1)
+```
+
+routed to its own receiver with `group_wait: 0s` and `repeat_interval: 5m`, so
+it can never be grouped, delayed, or deduplicated into silence. Alertmanager
+pings an external endpoint every five minutes. When the pings stop, that
+endpoint raises the alarm.
+
+### The part that makes it work, and the part that is not done yet
+
+**The watcher has to live outside the cluster.** A watchdog monitored from
+inside the thing it watches dies with it and reports nothing — which is the
+exact failure it exists to catch.
+
+That is what healthchecks.io provides: a free tier, no card, an endpoint that
+expects a ping on a schedule and emails when one is missed.
+
+**Currently the watchdog receiver points at a second ntfy topic, not at
+healthchecks.io.** That proves the routing works but does **not** close the
+loop: nothing is watching for the pings to stop. The loop closes with one
+command — replacing `watchdog-url` in the `alertmanager-urls` Secret with a
+healthchecks.io ping URL — and until that is done, this pattern is a
+demonstration rather than a guarantee. Recorded plainly because a watchdog
+believed to be working while it is not is worse than no watchdog at all.
+
+---
+
 # Honest assessment
 
 Not an ADR. A candid read of what this infrastructure work is worth, written
@@ -1625,15 +1761,20 @@ anon/authenticated key path that this app does not use for data access. It is
 the single largest gap between what the schema appears to guarantee and what
 it actually guarantees.
 
-**Observability stops at the alert.** Addressed in ADR-0023..0026 — structured
-JSON logging with enforced redaction, domain metrics driven by the incidents
-that actually happened, Prometheus and Grafana provisioned from files, and four
-alert rules. What is still absent: **nothing receives those alerts.** There is
-no Alertmanager, no routing, no notification, so a rule that fires changes a
-colour on a page nobody is looking at. There is also no tracing, which is a
-defensible omission for an application with a handful of routes and no
-distributed calls to correlate — a span would tell you what a log line already
-does.
+**Observability now reaches a phone; the watchdog loop is still open.**
+ADR-0023..0028 cover structured logging with enforced redaction, domain metrics
+driven by the incidents that actually happened, Prometheus and Grafana
+provisioned from files, alert rules, and an Alertmanager routing tree with
+grouping and inhibition that delivers to ntfy — verified end to end.
+
+What remains: the **dead man's switch is wired but not watched.** Its receiver
+currently points at a second ntfy topic rather than at an external service that
+alarms when the pings stop, so it demonstrates the pattern without providing
+the guarantee. One Secret value closes it.
+
+No tracing, which is a defensible omission for an application with a handful of
+routes and no distributed calls to correlate — a span would tell you what a log
+line already does.
 
 **No PodDisruptionBudget.** With two replicas and `maxUnavailable: 0` on the
 Deployment, a voluntary disruption — a node drain during a cluster upgrade —

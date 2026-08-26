@@ -1,0 +1,247 @@
+# Alertmanager — the part that was missing.
+#
+# Prometheus decides *when* something is wrong. Alertmanager decides *who
+# hears about it, how often, and whether it is worth hearing at all*. Without
+# it, a firing rule changed a colour on a page nobody was looking at.
+#
+# The routing tree below is the actual content of this file; the Deployment is
+# boilerplate. See docs/DECISIONS.md, ADR-0027.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: observability
+data:
+  alertmanager.yml: |
+    global:
+      # How long after Prometheus stops sending an alert it is considered
+      # resolved. Must exceed Prometheus's evaluation_interval (15s) with room
+      # to spare, or a slow evaluation cycle looks like a resolution.
+      resolve_timeout: 5m
+
+    route:
+      receiver: warning
+      # One notification per alert name and severity, rather than one per
+      # firing series. An alert that flaps produces a single grouped
+      # notification that updates, not twenty separate ones.
+      group_by: [alertname, severity]
+
+      # Wait this long after the first alert in a group before sending, so
+      # related alerts that fire together arrive as one message.
+      group_wait: 30s
+      # Then, at most this often, send an update if the group has changed.
+      group_interval: 5m
+      # And re-send an unchanged, still-firing group this often. The single
+      # most important number in alerting: too short trains you to ignore
+      # notifications, too long lets a real problem fade from memory.
+      repeat_interval: 24h
+
+      routes:
+        # ── The dead man's switch ────────────────────────────────────────────
+        # Always firing, by design. Its purpose is to be *missed*: a ping every
+        # five minutes to an external watcher that alerts when the pings stop.
+        # Never grouped, never delayed, never deduplicated away.
+        - matchers: ['alertname = "Watchdog"']
+          receiver: watchdog
+          group_wait: 0s
+          group_interval: 5m
+          repeat_interval: 5m
+
+        # ── Critical: something is broken and will not fix itself ────────────
+        - matchers: ['severity = "critical"']
+          receiver: critical
+          # Short, because the point of a critical alert is speed.
+          group_wait: 10s
+          group_interval: 5m
+          # Often enough to stay visible, rarely enough to stay meaningful.
+          repeat_interval: 4h
+
+        # ── Warning: worth knowing, not worth waking anyone ──────────────────
+        - matchers: ['severity = "warning"']
+          receiver: warning
+          group_wait: 2m
+          repeat_interval: 24h
+
+    inhibit_rules:
+      # WhoopSyncApproachingTimeout is the symptom; WhoopSyncNotRunning is the
+      # disease. If syncs have stopped entirely, being told they are also slow
+      # is noise at exactly the moment attention is scarcest.
+      #
+      # `equal: []` because both alerts are cluster-global and share no
+      # distinguishing labels — there is nothing to match them on beyond the
+      # fact that both are firing. On a multi-tenant setup this would be
+      # `equal: [namespace]` or similar, and getting that wrong lets one
+      # tenant's critical silence another tenant's warnings.
+      - source_matchers: ['alertname = "WhoopSyncNotRunning"']
+        target_matchers: ['alertname = "WhoopSyncApproachingTimeout"']
+        equal: []
+
+      # A failing token refresh means every subsequent sync will fail too.
+      # Report the cause, not the consequence.
+      - source_matchers: ['alertname = "WhoopTokenRefreshFailing"']
+        target_matchers: ['alertname = "WhoopSyncApproachingTimeout"']
+        equal: []
+
+    receivers:
+      # ntfy.sh: free, no account, and it reaches a phone. The topic is a
+      # capability — anyone who knows it can read and post — so it is a long
+      # random string kept in a Secret rather than in this ConfigMap, and the
+      # alert bodies carry rule names and durations, never user data.
+      # The headers are what ntfy renders as the notification title, priority
+      # and icon. Without them the phone shows Alertmanager's raw JSON body,
+      # which is delivered but unreadable at a glance — and a notification you
+      # have to parse is one you learn to swipe away.
+      - name: critical
+        webhook_configs:
+          - url_file: /etc/alertmanager/secrets/ntfy-url
+            send_resolved: true
+            max_alerts: 10
+            http_config:
+              http_headers:
+                Title:
+                  values: ["Health OS — critical"]
+                Priority:
+                  values: ["urgent"]
+                Tags:
+                  values: ["rotating_light"]
+
+      - name: warning
+        webhook_configs:
+          - url_file: /etc/alertmanager/secrets/ntfy-url
+            send_resolved: false
+            max_alerts: 10
+            http_config:
+              http_headers:
+                Title:
+                  values: ["Health OS — warning"]
+                Priority:
+                  values: ["default"]
+                Tags:
+                  values: ["warning"]
+
+      # Pings an external watcher. The whole point is that this destination is
+      # NOT part of the system it watches: if the cluster dies, the pings stop,
+      # and something outside notices. See ADR-0028.
+      - name: watchdog
+        webhook_configs:
+          - url_file: /etc/alertmanager/secrets/watchdog-url
+            send_resolved: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: alertmanager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: alertmanager
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: alertmanager
+      annotations:
+        # Changing the config alone does not restart a pod, so a rollout has to
+        # be triggered by hand after editing the ConfigMap. Noted rather than
+        # solved: the usual fix is a checksum annotation generated at apply
+        # time, which needs a templating step this repo deliberately avoids.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9093"
+        prometheus.io/path: /metrics
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+        - name: alertmanager
+          image: prom/alertmanager:v0.28.1
+          args:
+            - --config.file=/etc/alertmanager/alertmanager.yml
+            - --storage.path=/alertmanager
+            - --web.external-url=http://localhost/alertmanager
+            - --web.route-prefix=/
+          ports:
+            - name: http
+              containerPort: 9093
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alertmanager/alertmanager.yml
+              subPath: alertmanager.yml
+            - name: secrets
+              mountPath: /etc/alertmanager/secrets
+              readOnly: true
+            - name: data
+              mountPath: /alertmanager
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: http
+            periodSeconds: 15
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 25m
+            limits:
+              memory: 256Mi
+      volumes:
+        - name: config
+          configMap:
+            name: alertmanager-config
+        - name: secrets
+          secret:
+            secretName: alertmanager-urls
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: alertmanager
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: alertmanager
+  ports:
+    - name: http
+      port: 9093
+      targetPort: http
+---
+# Exposed so the routing tree and silences are inspectable. Prometheus itself
+# stays unexposed: its query API can enumerate every series in the cluster,
+# and Grafana already proxies the queries anyone needs.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: alertmanager
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: alertmanager
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: localhost
+      http:
+        paths:
+          - path: /alertmanager(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: alertmanager
+                port:
+                  name: http

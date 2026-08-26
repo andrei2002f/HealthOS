@@ -59,6 +59,13 @@ data:
     rule_files:
       - /etc/prometheus/rules/*.yml
 
+    # Where firing rules are sent. Without this block Prometheus evaluates the
+    # rules, shows their state on its own page, and tells nobody.
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets: ["alertmanager.observability.svc.cluster.local:9093"]
+
     scrape_configs:
       # Any pod carrying prometheus.io/scrape: "true" is scraped, so adding a
       # workload later needs an annotation rather than an edit here.
@@ -166,6 +173,32 @@ data:
                 Refresh tokens rotate on every use. Once refresh fails the
                 integration stays dead until someone reconnects the account by
                 hand, so this does not recover on its own.
+
+      # ── The dead man's switch ────────────────────────────────────────────
+      #
+      # Fires permanently, on purpose. Every other rule detects a condition;
+      # this one exists so its *absence* can be detected.
+      #
+      # That matters here more than most places. The signature failure of this
+      # project is silence: a cron that stopped firing, deploys that failed for
+      # five months, syncs left stuck at "running". Monitoring has exactly the
+      # same failure mode — if Prometheus dies, no rule fires again, and total
+      # silence is indistinguishable from perfect health.
+      #
+      # Routed to an external watcher that expects a ping every five minutes
+      # and raises the alarm when they stop. The watcher has to live outside
+      # the cluster, or it dies with the thing it is watching. See ADR-0028.
+      - name: watchdog
+        rules:
+          - alert: Watchdog
+            expr: vector(1)
+            labels:
+              severity: none
+            annotations:
+              summary: "Alerting pipeline is alive"
+              description: >-
+                Always firing. If this stops arriving, the alerting pipeline
+                itself is broken — which no other alert can tell you.
 
       - name: runtime
         rules:
