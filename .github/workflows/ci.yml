@@ -210,6 +210,33 @@ jobs:
           # point: a manifest that applies but does not run is not a success.
           kubectl -n healthos rollout status deploy/healthos --timeout=300s
 
+      # `rollout status` returning is not the same as the app being reachable.
+      # A pod becomes Ready and the endpoints controller adds it to the
+      # EndpointSlice, but ingress-nginx only routes to it once it has observed
+      # that and reconfigured — with no synchronisation between the two. The
+      # first CI run hit exactly this: pods were 1/1 Running and four seconds
+      # old, and the Ingress answered 503 with no upstream.
+      #
+      # This is the same race as ADR-0016, seen from the other side: there it
+      # was endpoint removal outrunning SIGTERM, here it is routing lagging
+      # readiness. Waiting on the condition rather than sleeping a guessed
+      # number of seconds keeps it fast when it is fast.
+      - name: Wait for the Ingress to route
+        run: |
+          set -uo pipefail
+          for attempt in $(seq 1 60); do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5               http://localhost/api/health/live || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "ingress routing after ${attempt}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Ingress never began routing (last status ${code})"
+          kubectl -n healthos get endpointslices -o wide || true
+          kubectl -n ingress-nginx logs -l app.kubernetes.io/component=controller             --tail=40 || true
+          exit 1
+
       - name: Smoke test
         run: |
           set -euo pipefail
