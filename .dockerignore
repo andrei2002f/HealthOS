@@ -6,6 +6,11 @@
 .git
 .gitignore
 .gitattributes
+# `.git` matches only `.git` — .dockerignore does not treat it as a prefix — so
+# without this line the workflow directory is part of the build context, and a
+# commit touching only ci.yml invalidates `COPY . .` and re-runs `pnpm build`.
+# Measured: 105s of a 136s build, paid for a change the image cannot contain.
+.github
 .vscode
 .idea
 .claude
