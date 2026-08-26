@@ -1200,22 +1200,66 @@ request.
 cleanly but whose pods never pass their probes is not a success, and the
 timeout is what turns that into a failure rather than a hang.
 
-### Measured stage timings
-
-From a full local rehearsal of the deploy job against the CI configuration:
+### Measured stage timings, from CI
 
 | Stage | Time |
 | --- | --- |
-| Create cluster (1 node) | 33 s |
-| Install ingress-nginx and wait | 34 s |
-| `kind load docker-image` (1 node) | 15 s |
-| In-cluster Postgres ready | 21 s |
-| Application rollout | 2 s |
-| Smoke test | 1 s |
+| **verify job, total** | **82–92 s** |
+| — dependency install (cached) | 5 s |
+| — lint / typecheck | 13 s / 11 s |
+| — unit / integration tests | 4 s / 5 s |
+| **deploy job, total** | **252–258 s** |
+| — build image | 133–136 s |
+| — create cluster (1 node) | 39–42 s |
+| — install ingress-nginx | 20 s |
+| — `kind load docker-image` | 10–12 s |
+| — in-cluster Postgres | 7 s |
+| — rollout | 3 s |
+| — wait for routing + smoke test | 2 s |
+| — push to GHCR | 14 s |
+| **Wall clock** | **~350 s (5 min 50 s)** |
 
-Roughly 106 s of cluster work, before the image build. The single-node choice
-(ADR-0014) is visible here: 33 s against 73 s for three nodes, and 15 s against
-39 s to load the image.
+Comfortably inside the 8-minute budget. The single-node choice (ADR-0014) is
+visible: 39 s against 73 s locally for three nodes, and 10 s against 39 s to
+load the image.
+
+**The image build is half the pipeline**, which makes it the only stage worth
+optimising further.
+
+### What the first runs actually cost, and one real finding
+
+Three runs were needed to get green, and none of the failures were things
+review would have caught:
+
+1. **`.nvmrc` did not exist.** The workflow read it, `CLAUDE.md` documented it,
+   and ADR-0002 claimed the base image matched it. All three were wrong — the
+   claim came from misreading a shell one-liner in Phase 1 whose `cat .nvmrc`
+   printed nothing while `node -v` printed the version I attributed to it.
+   Reading a file that is present on disk is not the same as reading one that
+   is committed, and only CI tells them apart.
+
+2. **The smoke test raced the Ingress.** `kubectl rollout status` returned,
+   both pods were `1/1 Running` and four seconds old, and the Ingress answered
+   503. Pod readiness, EndpointSlice membership and nginx reconfiguration are
+   three unsynchronised steps. This is ADR-0016's race from the other side:
+   there endpoint removal outran SIGTERM on shutdown; here routing lagged
+   readiness on startup. Fixed by waiting on the condition, with a 60 s
+   ceiling, rather than sleeping a guessed number of seconds. It never appeared
+   locally because the cluster had been up for minutes before anything was
+   tested.
+
+3. **`.github` was inside the Docker build context.** `.dockerignore` listed
+   `.git`, which matches that path exactly — the pattern is not treated as a
+   prefix. So every commit touching only `ci.yml` invalidated `COPY . .` and
+   re-ran `pnpm build`: the layer cache imported correctly and seven layers
+   reported `CACHED`, but a 105 s gap sat in the middle of a 136 s build, paid
+   for a file the image cannot contain.
+
+   Worth stating plainly because it sharpens the Phase 1 claim. Layer ordering
+   is the necessary condition and cache transport the sufficient one — but both
+   are undone by a build context that includes files with no bearing on the
+   image. The ordering was right from the start; the context was not, and only
+   reading the build log revealed it.
 
 ### Diagnostics on failure
 
