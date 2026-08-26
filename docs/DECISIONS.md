@@ -57,8 +57,14 @@ Concretely, this means:
 
 ### Context
 
-The runtime stage needs a Node 22 runtime (matching `.nvmrc`) and as little else
-as possible. Three candidates were considered: `node:22-alpine`,
+The runtime stage needs a Node 22 runtime and as little else as possible.
+
+(A correction: this originally said "matching `.nvmrc`". That file did not
+exist — the claim came from misreading a shell one-liner whose `cat .nvmrc`
+produced nothing while `node -v` produced the version I attributed to it. The
+first CI run failed on `node-version-file: .nvmrc` and made it visible. The file
+now exists and pins 22.20.0; the Dockerfile stays on the `22` tag so patch
+releases arrive with a rebuild, per the note on Debian updates below.) Three candidates were considered: `node:22-alpine`,
 `node:22-bookworm-slim`, and `gcr.io/distroless/nodejs22`.
 
 ### Decision
