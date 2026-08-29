@@ -1156,20 +1156,27 @@ succeeded, which is an expensive place to discover it.
 
 ### Free-tier constraint, stated plainly
 
-GitHub Packages gives a **private** repository 500 MB of storage. This image is
-280 MB. Layers are shared between tags, so successive builds add roughly the
-size of the application layers rather than a full copy — realistically three or
-four tags before the limit.
+**Resolved by publication.** While the repository was private, GitHub Packages
+allowed it 500 MB against a 280 MB image. Layers are shared between tags, so
+successive builds added roughly the application layers rather than a full copy
+— realistically three or four tags before the limit, which put a hard bound on
+something ADR-0016 assumes is unbounded: **the rollback window was about three
+deploys.**
 
-That is in direct tension with ADR-0016, which requires old images to remain
-pullable for rollback. **The honest consequence: the rollback window is
-approximately three deploys, not unlimited.** Either old versions get pruned
-manually, or the repository becomes public — public packages have no storage
-limit — which is the Phase 5 plan anyway.
+The repository and the package are now public, and public packages have no
+storage limit, so the constraint is gone. Verified anonymously: six SHA-tagged
+images pullable from `ghcr.io/andrei2002f/healthos` with no credentials.
 
-Actions minutes: a private repository on the Free plan includes 2,000 per
-month. At the measured run time that is roughly 300 runs. `concurrency` with
-`cancel-in-progress` stops a superseded commit from consuming a full run.
+Recorded rather than deleted, because the reasoning outlives this repository.
+An image of this size against a 500 MB allowance silently caps how far back you
+can roll, and nothing warns you — the push simply starts failing one day. On a
+private registry the answer is a retention policy that keeps the last N tags,
+chosen deliberately rather than discovered when a rollback is needed.
+
+Actions minutes: unlimited for public repositories. While private, the Free
+plan allowed 2,000 per month — roughly 300 runs at the measured time.
+`concurrency` with `cancel-in-progress` remains, since a superseded commit is
+not worth a runner either way.
 
 ---
 
@@ -1788,8 +1795,10 @@ by anything in the cluster.
 `kind load`, so `imagePullSecrets` and a real pull are untested — and that is
 exactly what a production cluster does on every deploy.
 
-**The rollback window is about three deploys**, bounded by GHCR's 500 MB free
-allowance for a private repository, which contradicts what ADR-0016 assumes.
+~~**The rollback window is about three deploys**, bounded by GHCR's 500 MB free
+allowance for a private repository.~~ **Closed** — the repository and its
+package are public, and public packages have no storage limit. Six SHA-tagged
+images verified anonymously pullable.
 
 **One rollout failure in roughly 500 requests is unexplained.** The `preStop`
 hook reduced it and did not remove it, and the in-cluster comparison that would
