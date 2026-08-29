@@ -30,9 +30,13 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files
+# env files -- every variant, not just the two that happened to exist.
+# `.env*.local` alone does not cover `.env.production`, and a file that is not
+# ignored is one `git add .` away from being public forever.
 .env
+.env.*
 .env*.local
+*.env
 !.env.example
 
 # vercel

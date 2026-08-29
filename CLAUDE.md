@@ -251,7 +251,10 @@ At the start of each session, tell me which week we're in and what's the next pl
 - `lib/env.ts`: Zod env validation with `server-only` guard
 - `lib/crypto.ts`: AES-256-GCM token encryption
 - PWA: Serwist service worker, `next build --webpack`, disabled in dev
-- Vercel deploy: `https://health-os-hud4.vercel.app`, 2 cron jobs (daily Whoop sync, weekly review)
+- Vercel deploy configured, with 2 cron jobs (daily Whoop sync, weekly review).
+  The deployment URL is intentionally not recorded here: the repository is
+  public and the app is single-user, so publishing the address of its login
+  page adds exposure and gains nothing.
 - Production login confirmed working
 
 ### ✅ Week 2 — Whoop sync (complete, 2026-05-17)

@@ -1,0 +1,43 @@
+#!/bin/sh
+#
+# Blocks a commit that would introduce a secret.
+#
+# Enable once per clone — hooks are not versioned by git itself, so this
+# directory has to be pointed at explicitly:
+#
+#   git config core.hooksPath .githooks
+#
+# That command is the reason this is a hook rather than only a CI check: CI
+# catches a secret after it exists in a commit, at which point removing it
+# means rewriting history. A hook catches it while it is still just a staged
+# change, which costs nothing.
+#
+# CI runs the same scan (see .github/workflows/ci.yml), because a hook can be
+# bypassed with --no-verify and is not installed on a fresh clone.
+
+set -e
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "pre-commit: gitleaks not found, skipping secret scan." >&2
+  echo "            install it (winget install Gitleaks.Gitleaks) or the" >&2
+  echo "            CI job is your only gate." >&2
+  exit 0
+fi
+
+# `git --staged` scans what is about to be committed rather than the whole
+# history, which keeps this fast enough to run on every commit. (The older
+# `gitleaks protect` still works but this is the current interface.)
+if ! gitleaks git --staged . --config .gitleaks.toml --redact --verbose; then
+  cat >&2 <<'MSG'
+
+pre-commit: a potential secret was found in the staged changes.
+
+  - If it is a real credential: unstage it, and rotate it if it was ever
+    written to disk somewhere shared.
+  - If it is a placeholder: add a narrow entry to .gitleaks.toml naming the
+    specific string, not the whole file.
+  - To bypass deliberately: git commit --no-verify
+
+MSG
+  exit 1
+fi

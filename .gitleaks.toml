@@ -1,0 +1,47 @@
+# gitleaks configuration.
+#
+# Used by the pre-commit hook (.githooks/pre-commit) and by the CI job, so a
+# credential cannot reach a commit, and cannot reach main if it somehow did.
+#
+# The allowlist below is deliberately narrow. A broad rule — "ignore anything
+# in tests" — would eventually hide a real secret someone pasted into a fixture
+# while debugging. Every entry here names a specific file AND a specific
+# string, so a genuinely new secret in the same file still fails the scan.
+
+[extend]
+# Start from the maintained ruleset (~170 rules) rather than replacing it.
+useDefault = true
+
+[allowlist]
+description = "Known-good placeholders, verified during the pre-publication audit"
+
+paths = [
+  # Build output and dependencies. Not committed — `.next/` holds the anon key
+  # baked into the client bundle by design, and scanning it produces hundreds
+  # of findings about a value that is public on purpose.
+  '''^\.next/''',
+  '''^node_modules/''',
+  # Lockfiles contain integrity hashes, which are high-entropy by nature.
+  '''^pnpm-lock\.yaml$''',
+]
+
+regexes = [
+  # lib/observability/logger.test.ts — the fake token the redaction test feeds
+  # to the logger to prove it never reaches the output.
+  '''wh_live_abc123''',
+  '''wh_refresh_xyz''',
+
+  # Placeholder credentials used by the test suite and by CI, where the whole
+  # point is that no real value exists. Each is self-describing.
+  '''test-encryption-key-at-least-32-chars-long''',
+  '''test-(anon|service-role|anthropic|client-id|client-secret|cron)-[a-z-]*key?''',
+  '''ci-placeholder(-encryption-key-32-chars)?''',
+
+  # Local and in-cluster databases. Both use postgres/postgres against a
+  # throwaway container; neither is reachable from outside a laptop or a CI
+  # runner. trufflehog confirmed both as unverified.
+  '''postgres://postgres:postgres@(localhost|postgres\.healthos\.svc\.cluster\.local):5432/healthos''',
+
+  # k8s/secret.example.yaml — a committed template that is never applied.
+  '''postgres://user:password@host:5432/postgres''',
+]

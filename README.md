@@ -11,7 +11,7 @@ It runs on Vercel. It also builds into a container, ships with a real test
 suite, and deploys to Kubernetes from CI — that side of the repo exists to make
 the deployment path explicit and reviewable, not because one user needs it.
 Every decision behind it is written down in
-[`docs/DECISIONS.md`](docs/DECISIONS.md) (22 ADRs), including the ones that
+[`docs/DECISIONS.md`](docs/DECISIONS.md) (28 ADRs), including the ones that
 turned out to be wrong.
 
 ---
@@ -110,15 +110,47 @@ applied; the real Secret is built from the gitignored `.env.local`.
 
 ---
 
+## Secrets
+
+No credential is committed, and two gates keep it that way.
+
+```bash
+git config core.hooksPath .githooks   # once per clone
+```
+
+That enables a pre-commit hook that runs `gitleaks` against the staged changes
+and refuses the commit on a finding. CI runs the same scan across the **entire
+history** as the first step of every run, before anything is installed or
+built — because a hook can be bypassed with `--no-verify` and is not installed
+on a fresh clone.
+
+Known placeholders are allowlisted individually in `.gitleaks.toml`, by exact
+string rather than by file, so a real secret pasted into the same test fixture
+still fails the scan.
+
+Real values never live in the repository:
+
+| | Where the value comes from |
+| --- | --- |
+| Local development | `.env.local`, gitignored |
+| Kubernetes | `kubectl create secret --from-env-file=.env.local`. `k8s/secret.example.yaml` is a committed template with placeholders and is never applied. |
+| CI | Placeholders for everything except the two public `NEXT_PUBLIC_*` values, which come from repository variables |
+| Production | Vercel environment variables |
+
+A Kubernetes Secret is base64, not encryption — anyone who can read the object
+reads the credential. On a real cluster the values would come from External
+Secrets Operator, Sealed Secrets, or SOPS, so that Git holds a reference and
+never a value. `k8s/secret.example.yaml` documents all three and why.
+
 ## Tests
 
 ```bash
-pnpm test              # everything, ~6s
-pnpm test:unit         # pure logic and mocked boundaries, ~1.2s
+pnpm test              # everything, ~8s
+pnpm test:unit         # pure logic and mocked boundaries, ~1.5s
 pnpm test:integration  # against a real Postgres, ~5s
 ```
 
-102 tests. The integration suite needs `docker compose up -d postgres` first,
+114 tests. The integration suite needs `docker compose up -d postgres` first,
 and **builds its schema by replaying the real migration chain**, not with
 `drizzle-kit push`. That is deliberate: production's schema comes from those
 files, so the tests must run against the same DDL. It also means every run
@@ -134,7 +166,7 @@ refuses to run against a non-local host. It truncates every table between tests.
 
 ```mermaid
 flowchart LR
-    V["verify<br/>lint · typecheck · 102 tests<br/>Postgres service container"]
+    V["verify<br/>gitleaks · lint · typecheck · 114 tests<br/>Postgres service container"]
     D["deploy<br/>build · kind · rollout · smoke"]
     G["GHCR<br/>tagged by commit SHA"]
 
@@ -164,8 +196,9 @@ Rollback is `kubectl -n healthos rollout undo deploy/healthos`.
 | `lib/db/` | Drizzle schema, migrations, queries grouped by domain. |
 | `lib/whoop/` | API client, OAuth, payload → row mappers. |
 | `lib/anthropic/` | Coach, weekly review, context builder. |
-| `k8s/` | Hand-written manifests. `k8s/ci/` is CI-only. |
-| `docs/DECISIONS.md` | 22 ADRs — the reasoning, including corrections. |
+| `lib/observability/` | Structured logger, Prometheus metrics, metrics server. |
+| `k8s/` | Hand-written manifests. `k8s/ci/` is CI-only, `k8s/observability/` is Prometheus, Grafana and Alertmanager. |
+| `docs/DECISIONS.md` | 28 ADRs — the reasoning, including corrections. |
 | `docs/PRD.md` | Product spec. |
 
 ---
