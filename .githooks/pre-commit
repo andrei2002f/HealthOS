@@ -17,17 +17,42 @@
 
 set -e
 
-if ! command -v gitleaks >/dev/null 2>&1; then
-  echo "pre-commit: gitleaks not found, skipping secret scan." >&2
-  echo "            install it (winget install Gitleaks.Gitleaks) or the" >&2
-  echo "            CI job is your only gate." >&2
+# Resolve gitleaks from PATH, or from where the common installers put it.
+# winget reports that it added a command alias but does not always leave one on
+# PATH, so relying on `command -v` alone made this hook silently do nothing on
+# the machine it was written for -- which is how a security gate becomes
+# theatre.
+GITLEAKS=""
+if command -v gitleaks >/dev/null 2>&1; then
+  GITLEAKS=gitleaks
+else
+  for candidate in     "$LOCALAPPDATA/Microsoft/WinGet/Links/gitleaks.exe"     "$LOCALAPPDATA"/Microsoft/WinGet/Packages/Gitleaks.Gitleaks_*/gitleaks.exe     /opt/homebrew/bin/gitleaks     /usr/local/bin/gitleaks     /usr/bin/gitleaks
+  do
+    if [ -x "$candidate" ]; then GITLEAKS="$candidate"; break; fi
+  done
+fi
+
+if [ -z "$GITLEAKS" ]; then
+  # Loud, not silent. CI still scans the full history, so this does not block
+  # the commit -- but you should know the local gate is not running.
+  cat >&2 <<'MSG'
+
+  ============================================================
+   pre-commit: gitleaks NOT FOUND -- secret scan did NOT run
+  ============================================================
+   Install it:  winget install Gitleaks.Gitleaks
+                brew install gitleaks
+   Until then, CI is the only thing standing between a secret
+   and a public commit.
+
+MSG
   exit 0
 fi
 
 # `git --staged` scans what is about to be committed rather than the whole
 # history, which keeps this fast enough to run on every commit. (The older
 # `gitleaks protect` still works but this is the current interface.)
-if ! gitleaks git --staged . --config .gitleaks.toml --redact --verbose; then
+if ! "$GITLEAKS" git --staged . --config .gitleaks.toml --redact --verbose; then
   cat >&2 <<'MSG'
 
 pre-commit: a potential secret was found in the staged changes.
